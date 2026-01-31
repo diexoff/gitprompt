@@ -1,8 +1,9 @@
 """Core GitIndexer class that orchestrates the entire indexing process."""
 
 import asyncio
+import hashlib
 import os
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Callable, Awaitable
 from pathlib import Path
 
 from .config import Config
@@ -47,23 +48,84 @@ class GitRepository:
         
         self._initialized = True
     
-    async def index_repository(self, branch: Optional[str] = None) -> Dict[str, Any]:
-        """Index the entire repository."""
+    async def index_repository(
+        self,
+        branch: Optional[str] = None,
+        verbose: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """Index the entire repository.
+
+        Args:
+            branch: Git branch to index (None = current).
+            verbose: If True, show progress bar and step messages.
+                     If None, use config.verbose.
+        """
         await self.initialize()
-        
-        # Parse repository
-        chunks = await self.parser.parse_repository(self.path, branch)
-        
-        # Generate embeddings
-        embeddings = await self._generate_embeddings(chunks)
-        
-        # Store in vector database
-        await self.vector_db.store_embeddings(embeddings)
-        
+        show_progress = verbose if verbose is not None else getattr(
+            self.config, "verbose", False
+        )
+
+        if show_progress:
+            from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+            from rich.console import Console
+            console = Console()
+
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[bold blue]{task.description}"),
+                BarColumn(bar_width=40),
+                TaskProgressColumn(),
+                console=console,
+            ) as progress:
+                # Phase 1: parsing
+                task_parse = progress.add_task("Парсинг репозитория...", total=None)
+                chunks = await self.parser.parse_repository(self.path, branch)
+                progress.update(task_parse, completed=1, total=1)
+                progress.remove_task(task_parse)
+
+                total_files = len(set(chunk.file_path for chunk in chunks))
+                progress.console.print(
+                    f"  [green]✓[/green] Найдено файлов: [bold]{total_files}[/bold], "
+                    f"чанков: [bold]{len(chunks)}[/bold]"
+                )
+
+                if not chunks:
+                    return {
+                        "total_files": 0,
+                        "total_chunks": 0,
+                        "total_embeddings": 0,
+                    }
+
+                # Phase 2: embeddings
+                def embed_progress(completed: int, total: int) -> None:
+                    progress.update(task_embed, completed=completed, total=total)
+
+                task_embed = progress.add_task(
+                    "Генерация эмбеддингов...", total=len(chunks)
+                )
+                embeddings = await self._generate_embeddings(
+                    chunks, progress_callback=embed_progress
+                )
+                progress.remove_task(task_embed)
+                progress.console.print(
+                    f"  [green]✓[/green] Эмбеддингов: [bold]{len(embeddings)}[/bold]"
+                )
+
+                # Phase 3: storing (все эмбеддинги — кэшированные уже с нужным chunk_id)
+                task_store = progress.add_task("Сохранение в векторную БД...", total=None)
+                await self.vector_db.store_embeddings(embeddings)
+                progress.update(task_store, completed=1, total=1)
+                progress.remove_task(task_store)
+                progress.console.print("  [green]✓[/green] Готово.")
+        else:
+            chunks = await self.parser.parse_repository(self.path, branch)
+            embeddings = await self._generate_embeddings(chunks)
+            await self.vector_db.store_embeddings(embeddings)
+
         return {
             "total_files": len(set(chunk.file_path for chunk in chunks)),
             "total_chunks": len(chunks),
-            "total_embeddings": len(embeddings)
+            "total_embeddings": len(embeddings),
         }
     
     async def index_changes(self, changes: List[FileChange]) -> Dict[str, Any]:
@@ -135,34 +197,88 @@ class GitRepository:
         if self.change_tracker:
             self.change_tracker.stop_tracking()
     
-    async def _generate_embeddings(self, chunks: List[FileChunk]) -> List[Embedding]:
-        """Generate embeddings for file chunks."""
+    def _relative_file_path(self, file_path: str) -> str:
+        """Возвращает file_path относительно корня репозитория (self.path)."""
+        if not file_path or not os.path.isabs(file_path):
+            return file_path
+        try:
+            return os.path.relpath(file_path, self.path)
+        except ValueError:
+            return file_path
+
+    async def _generate_embeddings(
+        self,
+        chunks: List[FileChunk],
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> List[Embedding]:
+        """Generate embeddings for file chunks. Чанки с уже сохранённым хешем не эмбеддятся повторно."""
         if not chunks:
             return []
-        
-        # Extract texts for batch processing
-        texts = [chunk.content for chunk in chunks]
-        
-        # Generate embeddings in batches
-        embeddings = []
-        for i in range(0, len(texts), self.config.llm.batch_size):
-            batch_texts = texts[i:i + self.config.llm.batch_size]
-            batch_chunks = chunks[i:i + self.config.llm.batch_size]
-            
-            batch_embeddings = await self.embedding_service.generate_embeddings_batch(batch_texts)
-            
-            for chunk, embedding_vector in zip(batch_chunks, batch_embeddings):
-                if embedding_vector:  # Skip failed embeddings
-                    embedding = Embedding(
-                        vector=embedding_vector,
-                        chunk_id=chunk.chunk_id,
-                        file_path=chunk.file_path,
-                        content=chunk.content,
-                        metadata=chunk.metadata
-                    )
-                    embeddings.append(embedding)
-        
-        return embeddings
+
+        total = len(chunks)
+        content_hashes = []
+        for c in chunks:
+            h = c.metadata.get("content_hash")
+            if not h:
+                h = hashlib.sha256(
+                    (c.file_path + "\0" + c.content).encode("utf-8")
+                ).hexdigest()
+                c.metadata["content_hash"] = h
+            content_hashes.append(h)
+
+        existing = await self.vector_db.get_embeddings_by_content_hashes(content_hashes)
+
+        result_by_index: Dict[int, Embedding] = {}
+        chunks_to_embed: List[tuple] = []
+
+        for i, chunk in enumerate(chunks):
+            h = content_hashes[i]
+            if h in existing:
+                emb = existing[h]
+                result_by_index[i] = Embedding(
+                    vector=emb.vector,
+                    chunk_id=chunk.chunk_id,
+                    file_path=self._relative_file_path(chunk.file_path),
+                    content=chunk.content,
+                    metadata={**chunk.metadata, "from_cache": True},
+                )
+            else:
+                chunks_to_embed.append((i, chunk))
+
+        if chunks_to_embed:
+            chunks_only = [chunk for _, chunk in chunks_to_embed]
+            texts = [c.content for c in chunks_only]
+            new_embeddings = []
+            for j in range(0, len(texts), self.config.llm.batch_size):
+                batch_texts = texts[j : j + self.config.llm.batch_size]
+                batch_chunks = chunks_only[j : j + self.config.llm.batch_size]
+                batch_vectors = await self.embedding_service.generate_embeddings_batch(
+                    batch_texts
+                )
+                for chunk, vec in zip(batch_chunks, batch_vectors):
+                    if vec:
+                        new_embeddings.append(
+                            Embedding(
+                                vector=vec,
+                                chunk_id=chunk.chunk_id,
+                                file_path=self._relative_file_path(chunk.file_path),
+                                content=chunk.content,
+                                metadata={**chunk.metadata, "from_cache": False},
+                            )
+                        )
+                if progress_callback is not None:
+                    done = len(result_by_index) + len(new_embeddings)
+                    progress_callback(done, total)
+            for k, (idx, _) in enumerate(chunks_to_embed):
+                if k < len(new_embeddings):
+                    result_by_index[idx] = new_embeddings[k]
+                # При ошибках API (например 413) в батче может быть меньше эмбеддингов,
+                # чем чанков — пропускаем неудачные, не падаем с KeyError
+
+        result = [result_by_index[i] for i in range(len(chunks)) if i in result_by_index]
+        if progress_callback is not None and not chunks_to_embed:
+            progress_callback(total, total)
+        return result
     
     async def _delete_file_embeddings(self, file_path: str) -> None:
         """Delete all embeddings for a specific file."""
@@ -186,10 +302,15 @@ class GitIndexer:
         self.repositories[path] = repo
         return repo
     
-    async def index_repository(self, path: str, branch: Optional[str] = None) -> Dict[str, Any]:
-        """Index a repository."""
+    async def index_repository(
+        self,
+        path: str,
+        branch: Optional[str] = None,
+        verbose: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """Index a repository. If verbose is True or config.verbose, shows progress."""
         repo = await self.add_repository(path)
-        return await repo.index_repository(branch)
+        return await repo.index_repository(branch=branch, verbose=verbose)
     
     async def search_across_repositories(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
         """Search across all indexed repositories."""

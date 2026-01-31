@@ -108,13 +108,13 @@ class GitRepositoryParser(GitParser):
                 repo = Repo(repo_path)
                 commit = repo.commit(branch)
                 blob = commit.tree / file_path
-                return blob.data_stream.read().decode('utf-8')
+                return blob.data_stream.read().decode('utf-8', errors='replace')
             # Current file content: read from disk (works for non-git folders too)
             full_path = os.path.join(repo_path, file_path)
             if not os.path.exists(full_path):
                 # File is in git tree but missing on disk (e.g. deleted, not committed)
                 return ""
-            with open(full_path, 'r', encoding='utf-8') as f:
+            with open(full_path, 'r', encoding='utf-8', errors='replace') as f:
                 return f.read()
         except Exception as e:
             print(f"Error reading file {file_path}: {e}")
@@ -156,7 +156,12 @@ class GitRepositoryParser(GitParser):
         return False
     
     async def _chunk_file(self, repo_path: str, file_path: str) -> List[FileChunk]:
-        """Split file into chunks."""
+        """Split file into chunks. file_path в чанках всегда относительный к repo_path."""
+        if os.path.isabs(file_path):
+            try:
+                file_path = os.path.relpath(file_path, repo_path)
+            except ValueError:
+                pass
         content = await self.get_file_content(repo_path, file_path)
         if not content:
             return []
@@ -170,6 +175,9 @@ class GitRepositoryParser(GitParser):
             chunk_lines = lines[i:end_line]
             chunk_content = '\n'.join(chunk_lines)
             
+            content_hash = hashlib.sha256(
+                (file_path + "\0" + chunk_content).encode("utf-8")
+            ).hexdigest()
             chunk = FileChunk(
                 file_path=file_path,
                 content=chunk_content,
@@ -177,6 +185,7 @@ class GitRepositoryParser(GitParser):
                 end_line=end_line,
                 chunk_id=f"{file_path}:{chunk_id}",
                 metadata={
+                    "content_hash": content_hash,
                     "total_lines": len(lines),
                     "chunk_size": len(chunk_lines),
                     "file_size": len(content)

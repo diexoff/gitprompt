@@ -103,12 +103,14 @@ class TestChromaVectorDB:
         
         await chroma_db.store_embeddings(embeddings)
         
-        mock_collection.add.assert_called_once_with(
-            ids=["test1", "test2"],
-            embeddings=[[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]],
-            documents=["test content", "test content 2"],
-            metadatas=[{"file_size": 20}, {"file_size": 25}]
-        )
+        call_kw = mock_collection.add.call_args[1]
+        assert call_kw["ids"] == ["test1", "test2"]
+        assert call_kw["embeddings"] == [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]
+        assert call_kw["documents"] == ["test content", "test content 2"]
+        assert call_kw["metadatas"][0]["file_path"] == "test.py"
+        assert call_kw["metadatas"][0]["file_size"] == 20
+        assert call_kw["metadatas"][1]["file_path"] == "test.py"
+        assert call_kw["metadatas"][1]["file_size"] == 25
     
     @pytest.mark.asyncio
     async def test_search_similar(self, chroma_db):
@@ -216,6 +218,39 @@ class TestChromaVectorDB:
         embedding = await chroma_db.get_embedding("nonexistent")
         
         assert embedding is None
+
+    @pytest.mark.asyncio
+    async def test_get_embeddings_by_content_hashes(self, chroma_db):
+        """По хешам возвращаются уже сохранённые эмбеддинги."""
+        mock_collection = Mock()
+        chroma_db.collection = mock_collection
+        h1, h2 = "a" * 64, "b" * 64
+        mock_collection.get.return_value = {
+            "ids": ["id1", "id2"],
+            "embeddings": [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]],
+            "documents": ["doc1", "doc2"],
+            "metadatas": [
+                {"content_hash": h1, "file_path": "f1.py"},
+                {"content_hash": h2, "file_path": "f2.py"},
+            ],
+        }
+        result = await chroma_db.get_embeddings_by_content_hashes([h1, h2])
+        assert len(result) == 2
+        assert result[h1].chunk_id == "id1"
+        assert result[h1].file_path == "f1.py"
+        assert result[h1].vector == [0.1, 0.2, 0.3]
+        assert result[h2].chunk_id == "id2"
+        assert result[h2].file_path == "f2.py"
+        mock_collection.get.assert_called_once_with(
+            where={"content_hash": {"$in": [h1, h2]}},
+            include=["embeddings", "documents", "metadatas"],
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_embeddings_by_content_hashes_empty(self, chroma_db):
+        """Пустой список хешей — пустой результат."""
+        result = await chroma_db.get_embeddings_by_content_hashes([])
+        assert result == {}
 
 
 class TestPineconeVectorDB:
@@ -386,6 +421,12 @@ class TestPineconeVectorDB:
         embedding = await pinecone_db.get_embedding("nonexistent")
         
         assert embedding is None
+
+    @pytest.mark.asyncio
+    async def test_get_embeddings_by_content_hashes_returns_empty(self, pinecone_db):
+        """Pinecone: по хешам не реализовано — возвращается пустой кэш."""
+        result = await pinecone_db.get_embeddings_by_content_hashes(["abc" * 20])
+        assert result == {}
 
 
 class TestQdrantVectorDB:
@@ -561,6 +602,12 @@ class TestQdrantVectorDB:
         embedding = await qdrant_db.get_embedding("nonexistent")
         
         assert embedding is None
+
+    @pytest.mark.asyncio
+    async def test_get_embeddings_by_content_hashes_returns_empty(self, qdrant_db):
+        """Qdrant: по хешам не реализовано — возвращается пустой кэш."""
+        result = await qdrant_db.get_embeddings_by_content_hashes(["abc" * 20])
+        assert result == {}
 
 
 class TestCreateVectorDatabase:

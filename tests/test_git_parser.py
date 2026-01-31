@@ -235,11 +235,38 @@ class TestGitRepositoryParser:
             assert chunk.end_line > 0
             assert chunk.chunk_id.startswith("main.py:")
             assert chunk.metadata
+            # Новый код: у каждого чанка есть content_hash в metadata
+            assert "content_hash" in chunk.metadata
+            assert isinstance(chunk.metadata["content_hash"], str)
+            assert len(chunk.metadata["content_hash"]) == 64  # SHA256 hex
         
         # Verify chunking logic
         if len(chunks) > 1:
             # Check overlap
             assert chunks[0].end_line > chunks[1].start_line
+
+    @pytest.mark.asyncio
+    async def test_chunk_file_content_hash_stable(self, mock_config, test_repo):
+        """Один и тот же (file_path, content) даёт один и тот же content_hash."""
+        parser = GitRepositoryParser(mock_config)
+        content = "print('same')"
+        with patch.object(parser, 'get_file_content', new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = content
+            chunks1 = await parser._chunk_file(test_repo, "a.py")
+            chunks2 = await parser._chunk_file(test_repo, "a.py")
+        assert chunks1[0].metadata["content_hash"] == chunks2[0].metadata["content_hash"]
+
+    @pytest.mark.asyncio
+    async def test_chunk_file_absolute_path_normalized_to_relative(self, mock_config, test_repo):
+        """Абсолютный file_path в _chunk_file приводится к относительному."""
+        parser = GitRepositoryParser(mock_config)
+        abs_path = os.path.abspath(os.path.join(test_repo, "main.py"))
+        with patch.object(parser, 'get_file_content', new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = "print('hi')"
+            chunks = await parser._chunk_file(test_repo, abs_path)
+        assert len(chunks) > 0
+        assert chunks[0].file_path == "main.py"
+        assert not os.path.isabs(chunks[0].file_path)
     
     @pytest.mark.asyncio
     async def test_chunk_file_empty(self, mock_config, test_repo):

@@ -18,6 +18,8 @@ class LLMProvider(str, Enum):
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
     COHERE = "cohere"
+    DEEPSEEK = "deepseek"
+    GIGACHAT = "gigachat"
     SENTENCE_TRANSFORMERS = "sentence_transformers"
 
 
@@ -46,7 +48,10 @@ class GitConfig(BaseModel):
     """Configuration for Git repository handling."""
     branch: Optional[str] = None
     include_patterns: List[str] = Field(default_factory=lambda: ["**/*.py", "**/*.js", "**/*.ts", "**/*.md"])
-    exclude_patterns: List[str] = Field(default_factory=lambda: ["**/node_modules/**", "**/.git/**", "**/__pycache__/**"])
+    exclude_patterns: List[str] = Field(default_factory=lambda: [
+        "**/node_modules/**", "**/.git/**", "**/__pycache__/**",
+        "**/env/**", "**/venv/**", "**/.venv/**",
+    ])
     chunk_size: int = 1000
     chunk_overlap: int = 200
     track_submodules: bool = True

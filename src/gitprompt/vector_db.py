@@ -51,7 +51,7 @@ class ChromaVectorDB(VectorDatabase):
             ids = [emb.chunk_id for emb in embeddings]
             vectors = [emb.vector for emb in embeddings]
             documents = [emb.content for emb in embeddings]
-            metadatas = [emb.metadata for emb in embeddings]
+            metadatas = [{"file_path": emb.file_path, **emb.metadata} for emb in embeddings]
             
             self.collection.add(
                 ids=ids,
@@ -74,13 +74,15 @@ class ChromaVectorDB(VectorDatabase):
                 n_results=limit
             )
             
-            # Convert to standard format
+            # Convert to standard format (file_path на верхнем уровне для удобства)
             similar_items = []
             for i in range(len(results['ids'][0])):
+                meta = results['metadatas'][0][i] if results['metadatas'] else {}
                 similar_items.append({
                     'chunk_id': results['ids'][0][i],
                     'content': results['documents'][0][i],
-                    'metadata': results['metadatas'][0][i],
+                    'file_path': meta.get('file_path', ''),
+                    'metadata': meta,
                     'distance': results['distances'][0][i]
                 })
             
@@ -133,6 +135,37 @@ class ChromaVectorDB(VectorDatabase):
             print(f"Error getting embedding from ChromaDB: {e}")
         
         return None
+
+    async def get_embeddings_by_content_hashes(
+        self, content_hashes: List[str]
+    ) -> Dict[str, Embedding]:
+        """Return embeddings that already exist for given content hashes."""
+        if not self.collection:
+            await self.initialize()
+        if not content_hashes:
+            return {}
+        try:
+            results = self.collection.get(
+                where={"content_hash": {"$in": content_hashes}},
+                include=["embeddings", "documents", "metadatas"],
+            )
+            out = {}
+            if results["ids"]:
+                for i, id_ in enumerate(results["ids"]):
+                    meta = results["metadatas"][i] if results["metadatas"] else {}
+                    h = meta.get("content_hash")
+                    if h and results["embeddings"]:
+                        out[h] = Embedding(
+                            vector=results["embeddings"][i],
+                            chunk_id=id_,
+                            file_path=meta.get("file_path", ""),
+                            content=results["documents"][i] if results["documents"] else "",
+                            metadata=meta,
+                        )
+            return out
+        except Exception as e:
+            print(f"Error getting embeddings by content hashes from ChromaDB: {e}")
+            return {}
 
 
 class PineconeVectorDB(VectorDatabase):
@@ -248,6 +281,12 @@ class PineconeVectorDB(VectorDatabase):
             print(f"Error getting embedding from Pinecone: {e}")
         
         return None
+
+    async def get_embeddings_by_content_hashes(
+        self, content_hashes: List[str]
+    ) -> Dict[str, Embedding]:
+        """Pinecone: по хешам не реализовано — возвращаем пустой кэш."""
+        return {}
 
 
 class QdrantVectorDB(VectorDatabase):
@@ -379,6 +418,12 @@ class QdrantVectorDB(VectorDatabase):
             print(f"Error getting embedding from Qdrant: {e}")
         
         return None
+
+    async def get_embeddings_by_content_hashes(
+        self, content_hashes: List[str]
+    ) -> Dict[str, Embedding]:
+        """Qdrant: по хешам не реализовано — возвращаем пустой кэш."""
+        return {}
 
 
 def create_vector_database(config: VectorDBConfig) -> VectorDatabase:

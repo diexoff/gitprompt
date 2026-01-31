@@ -129,7 +129,9 @@ class TestCLI:
                 await cmd_index(parsed_args)
 
                 mock_indexer_class.assert_called()
-                mock_indexer.index_repository.assert_called_with(temp_dir, None)
+                mock_indexer.index_repository.assert_called_with(
+                    temp_dir, None, verbose=False
+                )
     
     @pytest.mark.asyncio
     async def test_cmd_search(self):

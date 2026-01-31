@@ -38,32 +38,23 @@ class TestGitIndexerIntegration:
     async def test_full_indexing_workflow(self, integration_config, test_repo):
         """Test complete indexing workflow."""
         indexer = GitIndexer(integration_config)
-        
-        # Mock the embedding service to avoid API calls
-        with patch('gitprompt.embeddings.OpenAIEmbeddingService.generate_embeddings_batch') as mock_embeddings:
-            mock_embeddings.return_value = [
-                [0.1, 0.2, 0.3] * 100,  # 300-dimensional vector
-                [0.4, 0.5, 0.6] * 100,
-                [0.7, 0.8, 0.9] * 100
-            ]
-            
-            # Mock the vector database
-            with patch('gitprompt.vector_db.ChromaVectorDB.store_embeddings') as mock_store:
-                mock_store.return_value = AsyncMock()
-                
-                # Index the repository
-                result = await indexer.index_repository(test_repo)
-                
-                # Verify results
-                assert result['total_files'] > 0
-                assert result['total_chunks'] > 0
-                assert result['total_embeddings'] > 0
-                
-                # Verify that embeddings were generated
-                mock_embeddings.assert_called()
-                
-                # Verify that embeddings were stored
-                mock_store.assert_called()
+
+        # One vector per input text (required: result_by_index gets one entry per chunk)
+        def mock_embeddings_batch(texts):
+            dim = 300
+            return [[float((i + 1) * 0.1), float((i + 1) * 0.2), float((i + 1) * 0.3)] * (dim // 3) for i in range(len(texts))]
+
+        with patch('gitprompt.embeddings.OpenAIEmbeddingService.generate_embeddings_batch', new_callable=AsyncMock, side_effect=mock_embeddings_batch):
+            with patch('gitprompt.vector_db.ChromaVectorDB.get_embeddings_by_content_hashes', new_callable=AsyncMock, return_value={}):
+                with patch('gitprompt.vector_db.ChromaVectorDB.store_embeddings') as mock_store:
+                    mock_store.return_value = AsyncMock()
+
+                    result = await indexer.index_repository(test_repo)
+
+                    assert result['total_files'] > 0
+                    assert result['total_chunks'] > 0
+                    assert result['total_embeddings'] > 0
+                    mock_store.assert_called()
     
     @pytest.mark.asyncio
     async def test_search_functionality(self, integration_config, test_repo):

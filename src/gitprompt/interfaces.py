@@ -78,6 +78,13 @@ class VectorDatabase(ABC):
         """Get embedding by chunk ID."""
         pass
 
+    @abstractmethod
+    async def get_embeddings_by_content_hashes(
+        self, content_hashes: List[str]
+    ) -> Dict[str, "Embedding"]:
+        """Return embeddings that already exist for given content hashes. Key = content_hash."""
+        pass
+
 
 class EmbeddingService(ABC):
     """Abstract interface for embedding generation."""
