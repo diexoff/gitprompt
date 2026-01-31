@@ -139,7 +139,8 @@ class TestExceptions:
         try:
             raise ValueError("Original error")
         except ValueError as e:
-            error = GitPromptError("Wrapped error") from e
+            error = GitPromptError("Wrapped error")
+            error.__cause__ = e
             assert str(error) == "Wrapped error"
             assert error.__cause__ is e
 

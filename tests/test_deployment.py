@@ -91,12 +91,15 @@ class TestDeploymentManager:
                 "status": "active"
             }
             
-            # Mock the HTTP response
+            # Mock the HTTP response (post() returns async context manager)
             mock_response = Mock()
             mock_response.status = 200
             mock_response.json = AsyncMock(return_value={"status": "success"})
-            mock_session.post.return_value.__aenter__.return_value = mock_response
-            
+            mock_post = AsyncMock()
+            mock_post.__aenter__ = AsyncMock(return_value=mock_response)
+            mock_post.__aexit__ = AsyncMock(return_value=None)
+            mock_session.post.return_value = mock_post
+
             result = await deployment_manager.deploy_repository("/path/to/repo")
             
             assert result == {"status": "success"}
@@ -136,8 +139,11 @@ class TestDeploymentManager:
             mock_response = Mock()
             mock_response.status = 400
             mock_response.text = AsyncMock(return_value="Bad Request")
-            mock_session.post.return_value.__aenter__.return_value = mock_response
-            
+            mock_post = AsyncMock()
+            mock_post.__aenter__ = AsyncMock(return_value=mock_response)
+            mock_post.__aexit__ = AsyncMock(return_value=None)
+            mock_session.post.return_value = mock_post
+
             with pytest.raises(Exception, match="Deployment failed: Bad Request"):
                 await deployment_manager.deploy_repository("/path/to/repo")
     
@@ -163,8 +169,11 @@ class TestDeploymentManager:
             mock_response = Mock()
             mock_response.status = 200
             mock_response.json = AsyncMock(return_value={"status": "synced"})
-            mock_session.post.return_value.__aenter__.return_value = mock_response
-            
+            mock_post = AsyncMock()
+            mock_post.__aenter__ = AsyncMock(return_value=mock_response)
+            mock_post.__aexit__ = AsyncMock(return_value=None)
+            mock_session.post.return_value = mock_post
+
             result = await deployment_manager.sync_repository("/path/to/repo")
             
             assert result == {"status": "synced"}
@@ -200,12 +209,15 @@ class TestDeploymentManager:
         mock_session = Mock()
         deployment_manager.session = mock_session
         
-        # Mock the HTTP response
+        # Mock the HTTP response (get() returns async context manager)
         mock_response = Mock()
         mock_response.status = 200
         mock_response.json = AsyncMock(return_value={"status": "healthy"})
-        mock_session.get.return_value.__aenter__.return_value = mock_response
-        
+        mock_get = AsyncMock()
+        mock_get.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_get.__aexit__ = AsyncMock(return_value=None)
+        mock_session.get.return_value = mock_get
+
         result = await deployment_manager.get_remote_status()
         
         assert result == {"status": "healthy"}
@@ -222,8 +234,11 @@ class TestDeploymentManager:
         mock_response = Mock()
         mock_response.status = 500
         mock_response.text = AsyncMock(return_value="Internal Server Error")
-        mock_session.get.return_value.__aenter__.return_value = mock_response
-        
+        mock_get = AsyncMock()
+        mock_get.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_get.__aexit__ = AsyncMock(return_value=None)
+        mock_session.get.return_value = mock_get
+
         with pytest.raises(Exception, match="Failed to get remote status: Internal Server Error"):
             await deployment_manager.get_remote_status()
     
@@ -306,7 +321,7 @@ class TestRemoteIndexer:
         mock_session = Mock()
         remote_indexer.session = mock_session
         
-        # Mock the HTTP response
+        # Mock the HTTP response (post() returns async context manager)
         mock_response = Mock()
         mock_response.status = 200
         mock_response.json = AsyncMock(return_value={
@@ -318,8 +333,11 @@ class TestRemoteIndexer:
                 }
             ]
         })
-        mock_session.post.return_value.__aenter__.return_value = mock_response
-        
+        mock_post = AsyncMock()
+        mock_post.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_post.__aexit__ = AsyncMock(return_value=None)
+        mock_session.post.return_value = mock_post
+
         results = await remote_indexer.search("test query", limit=5)
         
         assert len(results) == 1
@@ -343,8 +361,11 @@ class TestRemoteIndexer:
         mock_response = Mock()
         mock_response.status = 400
         mock_response.text = AsyncMock(return_value="Bad Request")
-        mock_session.post.return_value.__aenter__.return_value = mock_response
-        
+        mock_post = AsyncMock()
+        mock_post.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_post.__aexit__ = AsyncMock(return_value=None)
+        mock_session.post.return_value = mock_post
+
         with pytest.raises(Exception, match="Search failed: Bad Request"):
             await remote_indexer.search("test query", limit=5)
     
@@ -355,12 +376,15 @@ class TestRemoteIndexer:
         mock_session = Mock()
         remote_indexer.session = mock_session
         
-        # Mock the HTTP response
+        # Mock the HTTP response (get() returns async context manager)
         mock_response = Mock()
         mock_response.status = 200
         mock_response.json = AsyncMock(return_value={"status": "active"})
-        mock_session.get.return_value.__aenter__.return_value = mock_response
-        
+        mock_get = AsyncMock()
+        mock_get.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_get.__aexit__ = AsyncMock(return_value=None)
+        mock_session.get.return_value = mock_get
+
         result = await remote_indexer.get_repository_status("/path/to/repo")
         
         assert result == {"status": "active"}

@@ -1,7 +1,17 @@
 """Basic usage examples for GitPrompt library."""
 
 import asyncio
-from gitprompt import GitIndexer, Config, VectorDBType, LLMProvider
+from gitprompt import (
+    GitIndexer,
+    Config,
+    VectorDBConfig,
+    LLMConfig,
+    GitConfig,
+    DeploymentConfig,
+    DeploymentManager,
+    VectorDBType,
+    LLMProvider,
+)
 
 
 async def basic_indexing_example():

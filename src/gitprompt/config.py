@@ -2,7 +2,7 @@
 
 from enum import Enum
 from typing import Optional, Dict, Any, List
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 
 
 class VectorDBType(str, Enum):
@@ -52,6 +52,16 @@ class GitConfig(BaseModel):
     track_submodules: bool = True
     track_remote: bool = False
 
+    @model_validator(mode="after")
+    def chunk_size_exceeds_overlap(self) -> "GitConfig":
+        """chunk_size must be greater than chunk_overlap, else chunking step is non-positive."""
+        if self.chunk_overlap >= self.chunk_size:
+            raise ValueError(
+                f"chunk_overlap ({self.chunk_overlap}) must be less than chunk_size ({self.chunk_size}), "
+                "otherwise no chunks are produced."
+            )
+        return self
+
 
 class DeploymentConfig(BaseModel):
     """Configuration for remote deployment."""
@@ -64,16 +74,14 @@ class DeploymentConfig(BaseModel):
 
 class Config(BaseModel):
     """Main configuration class for GitPrompt."""
+    model_config = ConfigDict(env_prefix="GITPROMPT_", case_sensitive=False)
+
     vector_db: VectorDBConfig
     llm: LLMConfig
     git: GitConfig = Field(default_factory=GitConfig)
     deployment: DeploymentConfig = Field(default_factory=DeploymentConfig)
-    
+
     # Global settings
     cache_dir: str = ".gitprompt_cache"
     log_level: str = "INFO"
     max_workers: int = 4
-    
-    class Config:
-        env_prefix = "GITPROMPT_"
-        case_sensitive = False

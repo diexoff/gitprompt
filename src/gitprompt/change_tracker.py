@@ -189,10 +189,18 @@ class GitChangeTracker(ChangeTracker):
         return False
     
     def _matches_pattern(self, file_path: str, pattern: str) -> bool:
-        """Check if file path matches pattern."""
+        """Check if file path matches pattern, supporting ** for recursive match."""
         import fnmatch
-        return fnmatch.fnmatch(file_path, pattern)
-    
+        if fnmatch.fnmatch(file_path, pattern):
+            return True
+        if pattern.startswith("**/"):
+            suffix = pattern[3:]
+            if fnmatch.fnmatch(file_path, suffix):
+                return True
+            if fnmatch.fnmatch(os.path.basename(file_path), suffix):
+                return True
+        return False
+
     async def _update_tracking_state(self, repo_path: str) -> None:
         """Update internal tracking state."""
         self.last_check_time = time.time()
@@ -342,10 +350,33 @@ class FileSystemChangeTracker(ChangeTracker):
         return False
     
     def _matches_pattern(self, file_path: str, pattern: str) -> bool:
-        """Check if file path matches pattern."""
+        """Check if file path matches pattern, supporting ** for recursive match."""
         import fnmatch
-        return fnmatch.fnmatch(file_path, pattern)
-    
+        if fnmatch.fnmatch(file_path, pattern):
+            return True
+        if pattern.startswith("**/"):
+            suffix = pattern[3:]
+            if fnmatch.fnmatch(file_path, suffix):
+                return True
+            if fnmatch.fnmatch(os.path.basename(file_path), suffix):
+                return True
+        return False
+
+    async def load_tracking_state(self, repo_path: str) -> None:
+        """Load tracking state from file (optional for filesystem tracker)."""
+        state_file = os.path.join(repo_path, ".gitprompt_state")
+        if not os.path.exists(state_file):
+            return
+        try:
+            with open(state_file, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if ":" in line and not line.startswith("last_check:"):
+                        file_path, file_hash = line.split(": ", 1)
+                        self.file_hashes[file_path] = file_hash
+        except Exception:
+            pass
+
     def stop_tracking(self) -> None:
         """Stop change tracking."""
         self._running = False

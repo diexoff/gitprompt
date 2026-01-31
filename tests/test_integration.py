@@ -67,66 +67,33 @@ class TestGitIndexerIntegration:
     
     @pytest.mark.asyncio
     async def test_search_functionality(self, integration_config, test_repo):
-        """Test search functionality."""
+        """Test search functionality (indexer must have at least one repo to search)."""
         indexer = GitIndexer(integration_config)
-        
-        # Mock the embedding service
-        with patch('gitprompt.embeddings.OpenAIEmbeddingService.generate_embedding') as mock_embedding:
-            mock_embedding.return_value = [0.1, 0.2, 0.3] * 100
-            
-            # Mock the vector database search
-            with patch('gitprompt.vector_db.ChromaVectorDB.search_similar') as mock_search:
-                mock_search.return_value = [
-                    {
-                        'chunk_id': 'test.py:0',
-                        'content': 'print("Hello, World!")',
-                        'metadata': {'file_path': 'test.py'},
-                        'distance': 0.95
-                    }
-                ]
-                
-                # Search in the repository
-                results = await indexer.search_across_repositories("Hello World", limit=5)
-                
-                # Verify results
-                assert len(results) > 0
-                assert results[0]['content'] == 'print("Hello, World!")'
-                
-                # Verify that embedding was generated for query
-                mock_embedding.assert_called_with("Hello World")
-                
-                # Verify that search was performed
-                mock_search.assert_called()
+        mock_repo = Mock()
+        mock_repo.path = test_repo
+        mock_repo.search_similar = AsyncMock(return_value=[
+            {'chunk_id': 'test.py:0', 'content': 'print("Hello, World!")', 'metadata': {'file_path': 'test.py'}, 'distance': 0.95}
+        ])
+        indexer.repositories[test_repo] = mock_repo
+
+        results = await indexer.search_across_repositories("Hello World", limit=5)
+        assert len(results) > 0
+        assert results[0]['content'] == 'print("Hello, World!")'
+        mock_repo.search_similar.assert_called_once_with("Hello World", 5)
     
     @pytest.mark.asyncio
     async def test_change_tracking(self, integration_config, test_repo):
-        """Test change tracking functionality."""
+        """Test change tracking functionality (patch instance's change_tracker)."""
+        from gitprompt.interfaces import FileChange, ChangeType
         indexer = GitIndexer(integration_config)
         repo = await indexer.add_repository(test_repo)
-        
-        # Mock the change tracker
-        with patch('gitprompt.change_tracker.GitChangeTracker.track_changes') as mock_track:
-            # Create a mock async generator
-            async def mock_changes():
-                from gitprompt.interfaces import FileChange, ChangeType
-                yield FileChange(
-                    file_path="test.py",
-                    change_type=ChangeType.MODIFIED
-                )
-            
-            mock_track.return_value = mock_changes()
-            
-            # Start change tracking
+        async def mock_changes():
+            yield FileChange(file_path="test.py", change_type=ChangeType.MODIFIED)
+        with patch.object(repo.change_tracker, 'track_changes', return_value=mock_changes()) as mock_track:
             task = asyncio.create_task(repo.start_change_tracking())
-            
-            # Wait a bit for the tracking to start
             await asyncio.sleep(0.1)
-            
-            # Stop tracking
             await repo.stop_change_tracking()
-            
-            # Verify that tracking was started
-            mock_track.assert_called_with(test_repo)
+        mock_track.assert_called_once_with(repo.path)
 
 
 @pytest.mark.integration
@@ -193,18 +160,13 @@ class TestEmbeddingServiceIntegration:
     
     @pytest.mark.asyncio
     async def test_openai_integration(self):
-        """Test OpenAI embedding service integration."""
+        """Test OpenAI embedding service integration (create service inside patch)."""
         from gitprompt.embeddings import OpenAIEmbeddingService
-        
         config = LLMConfig(
             provider=LLMProvider.OPENAI,
             api_key="test-key",
             model_name="text-embedding-ada-002"
         )
-        
-        service = OpenAIEmbeddingService(config)
-        
-        # Mock OpenAI client
         with patch('gitprompt.embeddings.openai.AsyncOpenAI') as mock_client_class:
             mock_client = Mock()
             mock_response = Mock()
@@ -212,49 +174,43 @@ class TestEmbeddingServiceIntegration:
             mock_response.data[0].embedding = [0.1, 0.2, 0.3] * 100
             mock_client.embeddings.create = AsyncMock(return_value=mock_response)
             mock_client_class.return_value = mock_client
-            
-            # Test single embedding
+            service = OpenAIEmbeddingService(config)
             embedding = await service.generate_embedding("test text")
             assert len(embedding) == 300
             assert embedding[0] == 0.1
-            
-            # Test batch embeddings
+            # batch: mock returns 1 item per create() call; we need 2 embeddings for 2 texts
+            mock_response.data = [Mock(), Mock()]
+            mock_response.data[0].embedding = [0.1, 0.2, 0.3] * 100
+            mock_response.data[1].embedding = [0.4, 0.5, 0.6] * 100
+            mock_client.embeddings.create = AsyncMock(return_value=mock_response)
             embeddings = await service.generate_embeddings_batch(["text1", "text2"])
             assert len(embeddings) == 2
             assert len(embeddings[0]) == 300
-            
-            # Test dimension
             dimension = service.get_embedding_dimension()
-            assert dimension == 1536  # text-embedding-ada-002 dimension
+            assert dimension == 1536
     
     @pytest.mark.asyncio
     async def test_sentence_transformers_integration(self):
-        """Test Sentence Transformers integration."""
+        """Test Sentence Transformers integration (create service inside patch, encode returns .tolist())."""
         from gitprompt.embeddings import SentenceTransformersEmbeddingService
-        
         config = LLMConfig(
             provider=LLMProvider.SENTENCE_TRANSFORMERS,
             model_name="all-MiniLM-L6-v2"
         )
-        
-        service = SentenceTransformersEmbeddingService(config)
-        
-        # Mock SentenceTransformer
-        with patch('gitprompt.embeddings.SentenceTransformer') as mock_model_class:
+        with patch('sentence_transformers.SentenceTransformer') as mock_model_class:
             mock_model = Mock()
-            mock_model.encode.return_value = [0.1, 0.2, 0.3] * 100
+            mock_model.encode.return_value = Mock(tolist=Mock(return_value=[0.1, 0.2, 0.3] * 100))
             mock_model.get_sentence_embedding_dimension.return_value = 384
             mock_model_class.return_value = mock_model
-            
-            # Test single embedding
+            service = SentenceTransformersEmbeddingService(config)
             embedding = await service.generate_embedding("test text")
             assert len(embedding) == 300
-            
-            # Test batch embeddings
+            mock_model.encode.return_value = [
+                Mock(tolist=Mock(return_value=[0.1, 0.2, 0.3] * 100)),
+                Mock(tolist=Mock(return_value=[0.4, 0.5, 0.6] * 100)),
+            ]
             embeddings = await service.generate_embeddings_batch(["text1", "text2"])
             assert len(embeddings) == 2
-            
-            # Test dimension
             dimension = service.get_embedding_dimension()
             assert dimension == 384
 

@@ -8,8 +8,18 @@ import json
 from unittest.mock import Mock, AsyncMock, patch
 from click.testing import CliRunner
 
-from gitprompt.cli import main, create_parser, load_config, save_config
-from gitprompt import Config, VectorDBType, LLMProvider
+from gitprompt.cli import (
+    main,
+    create_parser,
+    load_config,
+    save_config,
+    cmd_config,
+    cmd_index,
+    cmd_search,
+    cmd_monitor,
+    cmd_deploy,
+)
+from gitprompt import Config, VectorDBType, LLMProvider, VectorDBConfig, LLMConfig
 
 
 class TestCLI:
@@ -20,12 +30,16 @@ class TestCLI:
         parser = create_parser()
         
         # Test that parser has expected subcommands
-        subcommands = [action.dest for action in parser._subparsers._actions if hasattr(action, 'choices')]
-        assert 'index' in subcommands
-        assert 'search' in subcommands
-        assert 'monitor' in subcommands
-        assert 'deploy' in subcommands
-        assert 'config' in subcommands
+        subcommands = []
+        for action in parser._subparsers._actions:
+            if getattr(action, "choices", None) and isinstance(action.choices, dict):
+                subcommands = list(action.choices.keys())
+                break
+        assert "index" in subcommands
+        assert "search" in subcommands
+        assert "monitor" in subcommands
+        assert "deploy" in subcommands
+        assert "config" in subcommands
     
     def test_load_config_existing_file(self):
         """Test loading configuration from existing file."""
@@ -109,15 +123,11 @@ class TestCLI:
                 })
                 mock_indexer_class.return_value = mock_indexer
                 
-                # Test index command
-                args = ['index', temp_dir]
+                args = ["index", temp_dir]
                 parser = create_parser()
                 parsed_args = parser.parse_args(args)
-                
-                # This would normally be called by the CLI
-                # await cmd_index(parsed_args)
-                
-                # Verify that indexer was created and called
+                await cmd_index(parsed_args)
+
                 mock_indexer_class.assert_called()
                 mock_indexer.index_repository.assert_called_with(temp_dir, None)
     
@@ -136,17 +146,13 @@ class TestCLI:
             ])
             mock_indexer_class.return_value = mock_indexer
             
-            # Test search command
-            args = ['search', 'Hello World', '--limit', '5']
+            args = ["search", "Hello World", "--limit", "5"]
             parser = create_parser()
             parsed_args = parser.parse_args(args)
-            
-            # This would normally be called by the CLI
-            # await cmd_search(parsed_args)
-            
-            # Verify that indexer was created and called
+            await cmd_search(parsed_args)
+
             mock_indexer_class.assert_called()
-            mock_indexer.search_across_repositories.assert_called_with('Hello World', 5)
+            mock_indexer.search_across_repositories.assert_called_with("Hello World", 5)
     
     @pytest.mark.asyncio
     async def test_cmd_monitor(self):
@@ -161,15 +167,11 @@ class TestCLI:
                 mock_indexer.add_repository = AsyncMock(return_value=mock_repo)
                 mock_indexer_class.return_value = mock_indexer
                 
-                # Test monitor command
-                args = ['monitor', temp_dir]
+                args = ["monitor", temp_dir]
                 parser = create_parser()
                 parsed_args = parser.parse_args(args)
-                
-                # This would normally be called by the CLI
-                # await cmd_monitor(parsed_args)
-                
-                # Verify that indexer was created and called
+                await cmd_monitor(parsed_args)
+
                 mock_indexer_class.assert_called()
                 mock_indexer.add_repository.assert_called_with(temp_dir)
     
@@ -189,15 +191,18 @@ class TestCLI:
                 mock_deployment.deploy_repository = AsyncMock(return_value={'status': 'success'})
                 mock_deployment_class.return_value = mock_deployment
                 
-                # Test deploy command
-                args = ['deploy', temp_dir, '--server-url', 'https://test.com', '--api-key', 'test-key']
+                args = [
+                    "deploy",
+                    temp_dir,
+                    "--server-url",
+                    "https://test.com",
+                    "--api-key",
+                    "test-key",
+                ]
                 parser = create_parser()
                 parsed_args = parser.parse_args(args)
-                
-                # This would normally be called by the CLI
-                # await cmd_deploy(parsed_args)
-                
-                # Verify that indexer and deployment manager were created
+                await cmd_deploy(parsed_args)
+
                 mock_indexer_class.assert_called()
                 mock_deployment_class.assert_called()
     
@@ -211,10 +216,8 @@ class TestCLI:
             args = ['config', '--output', config_path, '--vector-db', 'chroma', '--llm-provider', 'openai', '--openai-key', 'test-key']
             parser = create_parser()
             parsed_args = parser.parse_args(args)
-            
-            # This would normally be called by the CLI
-            # cmd_config(parsed_args)
-            
+            cmd_config(parsed_args)
+
             # Verify file was created
             assert os.path.exists(config_path)
             

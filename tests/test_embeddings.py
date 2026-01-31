@@ -97,18 +97,20 @@ class TestOpenAIEmbeddingService:
     @pytest.mark.asyncio
     async def test_generate_embeddings_batch_large(self, openai_service):
         """Test generating large batch embeddings."""
-        texts = [f"text{i}" for i in range(25)]  # Larger than batch_size
+        texts = [f"text{i}" for i in range(25)]  # Larger than batch_size (10) -> 3 batches: 10, 10, 5
         
-        # Mock OpenAI client
+        # Mock OpenAI client: return 10, 10, 5 embeddings for the 3 calls
         with patch.object(openai_service.client, 'embeddings') as mock_embeddings:
-            mock_response = Mock()
-            mock_response.data = [Mock() for _ in range(10)]  # First batch
-            for data in mock_response.data:
-                data.embedding = [0.1, 0.2, 0.3] * 100
-            mock_embeddings.create = AsyncMock(return_value=mock_response)
-            
+            def make_response(n):
+                r = Mock()
+                r.data = [Mock() for _ in range(n)]
+                for data in r.data:
+                    data.embedding = [0.1, 0.2, 0.3] * 100
+                return r
+            mock_embeddings.create = AsyncMock(
+                side_effect=[make_response(10), make_response(10), make_response(5)]
+            )
             embeddings = await openai_service.generate_embeddings_batch(texts)
-            
             assert len(embeddings) == 25
             assert mock_embeddings.create.call_count == 3  # 3 batches
     
@@ -155,7 +157,7 @@ class TestOpenAIEmbeddingService:
 
 class TestSentenceTransformersEmbeddingService:
     """Test Sentence Transformers embedding service."""
-    
+
     @pytest.fixture
     def mock_config(self):
         """Create mock Sentence Transformers configuration."""
@@ -163,11 +165,16 @@ class TestSentenceTransformersEmbeddingService:
             provider=LLMProvider.SENTENCE_TRANSFORMERS,
             model_name="all-MiniLM-L6-v2"
         )
-    
+
     @pytest.fixture
     def st_service(self, mock_config):
-        """Create Sentence Transformers embedding service."""
-        return SentenceTransformersEmbeddingService(mock_config)
+        """Create Sentence Transformers embedding service with mocked model (no real model load)."""
+        with patch('sentence_transformers.SentenceTransformer') as mock_model_class:
+            mock_model_class.return_value.encode.return_value = Mock(
+                tolist=Mock(return_value=[0.1, 0.2, 0.3] * 100)
+            )
+            mock_model_class.return_value.get_sentence_embedding_dimension.return_value = 384
+            yield SentenceTransformersEmbeddingService(mock_config)
     
     def test_st_service_creation(self, st_service, mock_config):
         """Test Sentence Transformers service creation."""
@@ -177,18 +184,15 @@ class TestSentenceTransformersEmbeddingService:
     
     @pytest.mark.asyncio
     async def test_generate_embedding(self, st_service):
-        """Test generating single embedding."""
-        # Mock SentenceTransformer model
+        """Test generating single embedding (encode runs in executor, returns array with .tolist())."""
+        # Mock SentenceTransformer model: encode returns array-like with .tolist()
         with patch.object(st_service.model, 'encode') as mock_encode:
-            mock_encode.return_value = [0.1, 0.2, 0.3] * 100  # 300-dimensional
-            
+            mock_encode.return_value = Mock(tolist=Mock(return_value=[0.1, 0.2, 0.3] * 100))
             embedding = await st_service.generate_embedding("test text")
-            
             assert len(embedding) == 300
             assert embedding[0] == 0.1
             assert embedding[1] == 0.2
             assert embedding[2] == 0.3
-            
             mock_encode.assert_called_once_with("test text")
     
     @pytest.mark.asyncio
@@ -204,25 +208,20 @@ class TestSentenceTransformersEmbeddingService:
     
     @pytest.mark.asyncio
     async def test_generate_embeddings_batch(self, st_service):
-        """Test generating batch embeddings."""
+        """Test generating batch embeddings (encode returns list of arrays with .tolist())."""
         texts = ["text1", "text2", "text3"]
-        
-        # Mock SentenceTransformer model
         with patch.object(st_service.model, 'encode') as mock_encode:
             mock_encode.return_value = [
-                [0.1, 0.2, 0.3] * 100,
-                [0.4, 0.5, 0.6] * 100,
-                [0.7, 0.8, 0.9] * 100
+                Mock(tolist=Mock(return_value=[0.1, 0.2, 0.3] * 100)),
+                Mock(tolist=Mock(return_value=[0.4, 0.5, 0.6] * 100)),
+                Mock(tolist=Mock(return_value=[0.7, 0.8, 0.9] * 100)),
             ]
-            
             embeddings = await st_service.generate_embeddings_batch(texts)
-            
             assert len(embeddings) == 3
             assert len(embeddings[0]) == 300
             assert embeddings[0][0] == 0.1
             assert embeddings[1][0] == 0.4
             assert embeddings[2][0] == 0.7
-            
             mock_encode.assert_called_once_with(texts)
     
     @pytest.mark.asyncio
@@ -447,11 +446,11 @@ class TestCreateEmbeddingService:
     
     def test_create_unsupported_service(self):
         """Test creating unsupported embedding service."""
-        config = LLMConfig(
-            provider="unsupported_provider",
-            api_key="test-key"
-        )
-        
+        from unittest.mock import Mock
+
+        config = Mock()
+        config.provider = "unsupported_provider"
+
         with pytest.raises(ValueError, match="Unsupported LLM provider"):
             create_embedding_service(config)
 

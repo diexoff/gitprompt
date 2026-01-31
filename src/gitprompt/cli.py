@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 from .core import GitIndexer
-from .config import Config, VectorDBType, LLMProvider
+from .config import Config, VectorDBType, LLMProvider, VectorDBConfig, LLMConfig
 from .deployment import DeploymentManager
 
 
@@ -83,7 +83,7 @@ def load_config(config_path: Optional[str]) -> Config:
 def save_config(config: Config, output_path: str) -> None:
     """Save configuration to file."""
     with open(output_path, 'w') as f:
-        json.dump(config.dict(), f, indent=2)
+        json.dump(config.model_dump(), f, indent=2)
 
 
 async def cmd_index(args) -> None:

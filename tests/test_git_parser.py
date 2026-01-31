@@ -4,7 +4,7 @@ import pytest
 import asyncio
 import tempfile
 import os
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, patch, AsyncMock
 
 from gitprompt.git_parser import GitRepositoryParser
 from gitprompt.config import GitConfig
@@ -174,18 +174,13 @@ class TestGitRepositoryParser:
             mock_repo = Mock()
             mock_repo_class.return_value = mock_repo
             
-            # Mock staged changes
+            # diff("HEAD") then diff(None) are called
             mock_staged_diff = Mock()
             mock_staged_diff.a_path = "main.py"
-            mock_repo.index.diff.return_value = [mock_staged_diff]
-            
-            # Mock unstaged changes
             mock_unstaged_diff = Mock()
             mock_unstaged_diff.a_path = "utils.py"
-            mock_repo.index.diff.return_value = [mock_unstaged_diff]
-            
+            mock_repo.index.diff.side_effect = [[mock_staged_diff], [mock_unstaged_diff]]
             changes = await parser.get_current_changes(test_repo)
-            
             assert len(changes) > 0
             
             # Verify change properties
@@ -196,43 +191,39 @@ class TestGitRepositoryParser:
     
     @pytest.mark.asyncio
     async def test_get_file_content(self, mock_config, test_repo):
-        """Test getting file content."""
+        """Test getting file content (mock Repo so non-git temp dir doesn't raise)."""
         parser = GitRepositoryParser(mock_config)
-        
-        # Test getting current file content
-        content = await parser.get_file_content(test_repo, "main.py")
-        
+        with patch('gitprompt.git_parser.Repo') as mock_repo_class:
+            mock_repo_class.return_value = Mock()
+            content = await parser.get_file_content(test_repo, "main.py")
         assert content == "print('Hello, World!')\nprint('This is a test')\nprint('Another line')"
     
     @pytest.mark.asyncio
     async def test_get_file_content_from_branch(self, mock_config, test_repo):
         """Test getting file content from specific branch."""
         parser = GitRepositoryParser(mock_config)
-        
-        # Mock Git repository
         with patch('gitprompt.git_parser.Repo') as mock_repo_class:
             mock_repo = Mock()
             mock_repo_class.return_value = mock_repo
-            
-            # Mock commit and blob
             mock_commit = Mock()
             mock_repo.commit.return_value = mock_commit
-            
+            mock_tree = Mock()
+            mock_commit.tree = mock_tree
             mock_blob = Mock()
-            mock_blob.data_stream.read.return_value = b"print('Hello from branch!')"
-            mock_commit.tree.__truediv__.return_value = mock_blob
-            
+            mock_tree.__truediv__ = Mock(return_value=mock_blob)
+            read_result = Mock()
+            read_result.decode.return_value = "print('Hello from branch!')"
+            mock_blob.data_stream.read.return_value = read_result
             content = await parser.get_file_content(test_repo, "main.py", "feature-branch")
-            
-            assert content == "print('Hello from branch!')"
+        assert content == "print('Hello from branch!')"
     
     @pytest.mark.asyncio
     async def test_chunk_file(self, mock_config, test_repo):
         """Test file chunking."""
         parser = GitRepositoryParser(mock_config)
-        
-        chunks = await parser._chunk_file(test_repo, "main.py")
-        
+        with patch.object(parser, 'get_file_content', new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = "print('Hello, World!')\nprint('This is a test')\nprint('Another line')"
+            chunks = await parser._chunk_file(test_repo, "main.py")
         assert len(chunks) > 0
         
         # Verify chunk properties
@@ -268,15 +259,10 @@ class TestGitRepositoryParser:
     async def test_chunk_file_large(self, mock_config, test_repo):
         """Test chunking large file."""
         parser = GitRepositoryParser(mock_config)
-        
-        # Create large file
-        large_file = os.path.join(test_repo, "large.py")
-        with open(large_file, 'w') as f:
-            for i in range(200):  # 200 lines
-                f.write(f"print('Line {i}')\n")
-        
-        chunks = await parser._chunk_file(test_repo, "large.py")
-        
+        large_content = "\n".join(f"print('Line {i}')" for i in range(200))
+        with patch.object(parser, 'get_file_content', new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = large_content
+            chunks = await parser._chunk_file(test_repo, "large.py")
         assert len(chunks) > 1  # Should be chunked
         
         # Verify chunking

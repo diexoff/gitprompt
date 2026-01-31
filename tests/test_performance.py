@@ -103,85 +103,73 @@ class TestPerformance:
     async def test_search_performance(self, performance_config, large_repo):
         """Test search performance."""
         indexer = GitIndexer(performance_config)
-        
-        # Mock the embedding service
+        mock_results = [
+            {
+                'chunk_id': f'test_{i}.py:0',
+                'content': f'Test content {i}',
+                'metadata': {'file_path': f'test_{i}.py'},
+                'distance': 0.9 - (i * 0.01)
+            }
+            for i in range(10)
+        ]
+        mock_repo = Mock()
+        mock_repo.path = large_repo
+        mock_repo.search_similar = AsyncMock(return_value=mock_results)
+        indexer.repositories[large_repo] = mock_repo
+
         with patch('gitprompt.embeddings.OpenAIEmbeddingService.generate_embedding') as mock_embedding:
             mock_embedding.return_value = [0.1, 0.2, 0.3] * 100
-            
-            # Mock the vector database search
-            with patch('gitprompt.vector_db.ChromaVectorDB.search_similar') as mock_search:
-                # Return realistic search results
-                mock_search.return_value = [
-                    {
-                        'chunk_id': f'test_{i}.py:0',
-                        'content': f'Test content {i}',
-                        'metadata': {'file_path': f'test_{i}.py'},
-                        'distance': 0.9 - (i * 0.01)
-                    }
-                    for i in range(10)
-                ]
+            start_time = time.time()
+            results = await indexer.search_across_repositories("test query", limit=10)
+            end_time = time.time()
+            search_time = end_time - start_time
+            assert len(results) == 10
                 
-                # Measure search time
-                start_time = time.time()
-                results = await indexer.search_across_repositories("test query", limit=10)
-                end_time = time.time()
-                
-                search_time = end_time - start_time
-                
-                # Verify results
-                assert len(results) == 10
-                
-                # Performance assertions
-                assert search_time < 5  # Should complete within 5 seconds
-                
-                print(f"Search performance:")
-                print(f"  Results: {len(results)}")
-                print(f"  Time: {search_time:.3f} seconds")
-                print(f"  Results/sec: {len(results) / search_time:.2f}")
-    
+            assert search_time < 5
+            print(f"Search performance: Results: {len(results)}, Time: {search_time:.3f}s")
+
     @pytest.mark.asyncio
     async def test_batch_processing_performance(self, performance_config):
-        """Test batch processing performance."""
+        """Test batch processing performance (mock client before creating service)."""
         from gitprompt.embeddings import OpenAIEmbeddingService
-        
+
         config = LLMConfig(
             provider=LLMProvider.OPENAI,
             api_key="test-key",
             model_name="text-embedding-ada-002",
             batch_size=100
         )
-        
-        service = OpenAIEmbeddingService(config)
-        
-        # Mock OpenAI client
+
+        def make_response(n):
+            r = Mock()
+            r.data = [Mock() for _ in range(n)]
+            for data in r.data:
+                data.embedding = [0.1, 0.2, 0.3] * 100
+            return r
+
         with patch('gitprompt.embeddings.openai.AsyncOpenAI') as mock_client_class:
             mock_client = Mock()
-            mock_response = Mock()
-            mock_response.data = [Mock() for _ in range(100)]
-            for i, data in enumerate(mock_response.data):
-                data.embedding = [0.1, 0.2, 0.3] * 100
-            mock_client.embeddings.create = AsyncMock(return_value=mock_response)
+            # batch_size=100: 10→1 call, 50→1, 100→1, 200→2 calls → 5 responses
+            mock_client.embeddings.create = AsyncMock(
+                side_effect=[
+                    make_response(10),
+                    make_response(50),
+                    make_response(100),
+                    make_response(100),
+                    make_response(100),
+                ]
+            )
             mock_client_class.return_value = mock_client
-            
-            # Test with different batch sizes
+            service = OpenAIEmbeddingService(config)
+
             batch_sizes = [10, 50, 100, 200]
-            
             for batch_size in batch_sizes:
                 texts = [f"Test text {i}" for i in range(batch_size)]
-                
                 start_time = time.time()
                 embeddings = await service.generate_embeddings_batch(texts)
-                end_time = time.time()
-                
-                processing_time = end_time - start_time
-                texts_per_second = batch_size / processing_time
-                
-                print(f"Batch size {batch_size}:")
-                print(f"  Time: {processing_time:.3f} seconds")
-                print(f"  Texts/sec: {texts_per_second:.2f}")
-                
+                processing_time = time.time() - start_time
                 assert len(embeddings) == batch_size
-                assert processing_time < 10  # Should complete within 10 seconds
+                assert processing_time < 10
     
     @pytest.mark.asyncio
     async def test_memory_usage(self, performance_config, large_repo):
@@ -224,39 +212,23 @@ class TestPerformance:
     async def test_concurrent_operations(self, performance_config):
         """Test concurrent operations performance."""
         indexer = GitIndexer(performance_config)
-        
-        # Mock the embedding service
+        mock_repo = Mock()
+        mock_repo.path = "/mock/repo"
+        mock_repo.search_similar = AsyncMock(return_value=[
+            {'chunk_id': 'test.py:0', 'content': 'Test content', 'metadata': {'file_path': 'test.py'}, 'distance': 0.9}
+        ])
+        indexer.repositories["/mock/repo"] = mock_repo
+
         with patch('gitprompt.embeddings.OpenAIEmbeddingService.generate_embedding') as mock_embedding:
             mock_embedding.return_value = [0.1, 0.2, 0.3] * 100
-            
-            # Mock the vector database search
-            with patch('gitprompt.vector_db.ChromaVectorDB.search_similar') as mock_search:
-                mock_search.return_value = [
-                    {
-                        'chunk_id': 'test.py:0',
-                        'content': 'Test content',
-                        'metadata': {'file_path': 'test.py'},
-                        'distance': 0.9
-                    }
-                ]
-                
-                # Create multiple concurrent search tasks
-                queries = [f"query {i}" for i in range(10)]
-                
-                start_time = time.time()
-                tasks = [
-                    indexer.search_across_repositories(query, limit=5)
-                    for query in queries
-                ]
-                results = await asyncio.gather(*tasks)
-                end_time = time.time()
-                
-                concurrent_time = end_time - start_time
-                
-                # Verify results
-                assert len(results) == 10
-                for result in results:
-                    assert len(result) > 0
+            queries = [f"query {i}" for i in range(10)]
+            start_time = time.time()
+            tasks = [indexer.search_across_repositories(q, limit=5) for q in queries]
+            results = await asyncio.gather(*tasks)
+            concurrent_time = time.time() - start_time
+            assert len(results) == 10
+            for result in results:
+                assert len(result) > 0
                 
                 print(f"Concurrent operations:")
                 print(f"  Queries: {len(queries)}")

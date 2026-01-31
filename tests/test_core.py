@@ -62,7 +62,8 @@ class TestGitRepository:
         assert repo.parser is not None
         assert repo.embedding_service is not None
         assert repo.vector_db is not None
-        assert repo.change_tracker is not None
+        # change_tracker is set in initialize(), not in __init__
+        assert repo.change_tracker is None
         assert repo._initialized is False
     
     @pytest.mark.asyncio
@@ -71,14 +72,14 @@ class TestGitRepository:
         temp_dir, config = test_repo
         repo = GitRepository(temp_dir, config)
         
-        # Mock the vector database initialization
-        with patch.object(repo.vector_db, 'initialize') as mock_init:
-            mock_init.return_value = AsyncMock()
-            
+        # Mock the vector database and embedding service
+        with patch.object(repo.vector_db, "initialize", new_callable=AsyncMock), \
+             patch.object(repo.embedding_service, "get_embedding_dimension", return_value=384):
             await repo.initialize()
-            
+
             assert repo._initialized is True
-            mock_init.assert_called_once()
+            assert repo.change_tracker is not None
+            repo.vector_db.initialize.assert_called_once()
     
     @pytest.mark.asyncio
     async def test_git_repository_index_repository(self, test_repo):
@@ -228,33 +229,20 @@ class TestGitRepository:
         """Test GitRepository change tracking."""
         temp_dir, config = test_repo
         repo = GitRepository(temp_dir, config)
-        
-        # Mock the change tracker
-        with patch.object(repo.change_tracker, 'track_changes') as mock_track:
-            # Create a mock async generator
-            async def mock_changes():
-                yield FileChange(
-                    file_path="test.py",
-                    change_type=ChangeType.MODIFIED
-                )
-            
-            mock_track.return_value = mock_changes()
-            
-            # Mock initialization
-            with patch.object(repo, 'initialize') as mock_init:
-                mock_init.return_value = AsyncMock()
-                
-                # Start change tracking
-                task = asyncio.create_task(repo.start_change_tracking())
-                
-                # Wait a bit for the tracking to start
-                await asyncio.sleep(0.1)
-                
-                # Stop tracking
-                await repo.stop_change_tracking()
-                
-                # Verify that tracking was started
-                mock_track.assert_called_with(temp_dir)
+        # Initialize first so change_tracker is set
+        with patch.object(repo.vector_db, "initialize", new_callable=AsyncMock), \
+             patch.object(repo.embedding_service, "get_embedding_dimension", return_value=384):
+            await repo.initialize()
+
+        async def mock_changes():
+            yield FileChange(file_path="test.py", change_type=ChangeType.MODIFIED)
+
+        with patch.object(repo.change_tracker, "track_changes", return_value=mock_changes()):
+            task = asyncio.create_task(repo.start_change_tracking())
+            await asyncio.sleep(0.1)
+            await repo.stop_change_tracking()
+            await asyncio.sleep(0.05)
+            repo.change_tracker.track_changes.assert_called_with(temp_dir)
     
     @pytest.mark.asyncio
     async def test_git_repository_generate_embeddings(self, test_repo):
@@ -477,30 +465,27 @@ class TestGitIndexer:
     
     @pytest.mark.asyncio
     async def test_git_indexer_start_monitoring(self, mock_config):
-        """Test GitIndexer start monitoring."""
+        """Test GitIndexer start monitoring (start_change_tracking returns coroutine; stop_change_tracking must be awaitable)."""
         indexer = GitIndexer(mock_config)
-        
-        # Add mock repositories
+        async def noop_tracking():
+            await asyncio.sleep(0.01)
+        async def noop_stop():
+            pass
         mock_repo1 = Mock()
-        mock_repo1.start_change_tracking = AsyncMock()
         mock_repo2 = Mock()
-        mock_repo2.start_change_tracking = AsyncMock()
-        
+        # Use Mock(side_effect=...) so (1) call returns coroutine, (2) we can assert_called_once
+        mock_repo1.start_change_tracking = Mock(side_effect=noop_tracking)
+        mock_repo2.start_change_tracking = Mock(side_effect=noop_tracking)
+        mock_repo1.stop_change_tracking = noop_stop
+        mock_repo2.stop_change_tracking = noop_stop
         indexer.repositories = {
             "/path/to/repo1": mock_repo1,
-            "/path/to/repo2": mock_repo2
+            "/path/to/repo2": mock_repo2,
         }
-        
-        # Start monitoring
         task = asyncio.create_task(indexer.start_monitoring())
-        
-        # Wait a bit for monitoring to start
         await asyncio.sleep(0.1)
-        
-        # Stop monitoring
         await indexer.stop_monitoring()
-        
-        # Verify that monitoring was started for all repositories
+        await asyncio.sleep(0.05)
         mock_repo1.start_change_tracking.assert_called_once()
         mock_repo2.start_change_tracking.assert_called_once()
     

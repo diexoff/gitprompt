@@ -267,7 +267,7 @@ async def distributed_indexing_example():
     for repo_path in repositories:
         process = mp.Process(
             target=worker_process,
-            args=(repo_path, config.dict())
+            args=(repo_path, config.model_dump())
         )
         processes.append(process)
         process.start()

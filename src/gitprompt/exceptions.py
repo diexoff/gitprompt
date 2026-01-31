@@ -13,7 +13,10 @@ class ConfigurationError(GitPromptError):
 
 class VectorDatabaseError(GitPromptError):
     """Raised when there's an error with vector database operations."""
-    pass
+
+    def __init__(self, message: str, details: dict | None = None):
+        super().__init__(message)
+        self.details = details or {}
 
 
 class EmbeddingError(GitPromptError):

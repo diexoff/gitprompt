@@ -1,5 +1,6 @@
 """Tests for GitPrompt vector database implementations."""
 
+import sys
 import pytest
 import asyncio
 from unittest.mock import Mock, AsyncMock, patch
@@ -242,25 +243,26 @@ class TestPineconeVectorDB:
     
     @pytest.mark.asyncio
     async def test_initialize(self, pinecone_db):
-        """Test Pinecone initialization."""
-        with patch('gitprompt.vector_db.pinecone') as mock_pinecone:
-            mock_pinecone.list_indexes.return_value = []
-            mock_pinecone.create_index.return_value = None
-            mock_index = Mock()
-            mock_pinecone.Index.return_value = mock_index
-            
+        """Test Pinecone initialization (pinecone is imported inside initialize())."""
+        mock_pinecone = Mock()
+        mock_pinecone.list_indexes.return_value = []
+        mock_pinecone.create_index.return_value = None
+        mock_index = Mock()
+        mock_pinecone.Index.return_value = mock_index
+
+        with patch.dict(sys.modules, {'pinecone': mock_pinecone}):
             await pinecone_db.initialize()
-            
-            assert pinecone_db.index == mock_index
-            mock_pinecone.init.assert_called_once_with(
-                api_key="test-key",
-                environment="us-west1-gcp"
-            )
-            mock_pinecone.create_index.assert_called_once_with(
-                name="test-collection",
-                dimension=1536,
-                metric='cosine'
-            )
+
+        assert pinecone_db.index == mock_index
+        mock_pinecone.init.assert_called_once_with(
+            api_key="test-key",
+            environment="us-west1-gcp"
+        )
+        mock_pinecone.create_index.assert_called_once_with(
+            name="test-collection",
+            dimension=1536,
+            metric='cosine'
+        )
     
     @pytest.mark.asyncio
     async def test_store_embeddings(self, pinecone_db):
@@ -605,11 +607,11 @@ class TestCreateVectorDatabase:
     
     def test_create_unsupported_db(self):
         """Test creating unsupported vector database."""
-        config = VectorDBConfig(
-            type="unsupported_type",
-            collection_name="test_collection"
-        )
-        
+        from unittest.mock import Mock
+
+        config = Mock()
+        config.type = "unsupported_type"
+
         with pytest.raises(ValueError, match="Unsupported vector database type"):
             create_vector_database(config)
 

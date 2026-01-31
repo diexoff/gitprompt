@@ -16,7 +16,14 @@
 
 ```python
 import asyncio
-from gitprompt import GitIndexer, Config, VectorDBType, LLMProvider
+from gitprompt import (
+    GitIndexer,
+    Config,
+    VectorDBConfig,
+    LLMConfig,
+    VectorDBType,
+    LLMProvider,
+)
 
 async def basic_example():
     """Базовый пример индексации и поиска."""
@@ -67,7 +74,14 @@ if __name__ == "__main__":
 
 ```python
 import asyncio
-from gitprompt import GitIndexer, Config, VectorDBType, LLMProvider
+from gitprompt import (
+    GitIndexer,
+    Config,
+    VectorDBConfig,
+    LLMConfig,
+    VectorDBType,
+    LLMProvider,
+)
 
 async def multi_repo_example():
     """Пример работы с несколькими репозиториями."""
@@ -137,7 +151,14 @@ if __name__ == "__main__":
 
 ```python
 import asyncio
-from gitprompt import GitIndexer, Config, VectorDBType, LLMProvider
+from gitprompt import (
+    GitIndexer,
+    Config,
+    VectorDBConfig,
+    LLMConfig,
+    VectorDBType,
+    LLMProvider,
+)
 
 async def branch_indexing_example():
     """Пример индексации определенной ветки."""
@@ -190,7 +211,15 @@ if __name__ == "__main__":
 ```python
 import asyncio
 import signal
-from gitprompt import GitIndexer, Config, VectorDBType, LLMProvider
+from gitprompt import (
+    GitIndexer,
+    Config,
+    VectorDBConfig,
+    LLMConfig,
+    DeploymentConfig,
+    VectorDBType,
+    LLMProvider,
+)
 
 class RealTimeMonitor:
     """Мониторинг изменений в реальном времени."""
@@ -275,7 +304,14 @@ if __name__ == "__main__":
 
 ```python
 import asyncio
-from gitprompt import GitIndexer, Config, VectorDBType, LLMProvider
+from gitprompt import (
+    GitIndexer,
+    Config,
+    VectorDBConfig,
+    LLMConfig,
+    VectorDBType,
+    LLMProvider,
+)
 from gitprompt.interfaces import ChangeType
 
 async def branch_comparison_example():
@@ -357,7 +393,14 @@ if __name__ == "__main__":
 ```python
 import asyncio
 from collections import defaultdict
-from gitprompt import GitIndexer, Config, VectorDBType, LLMProvider
+from gitprompt import (
+    GitIndexer,
+    Config,
+    VectorDBConfig,
+    LLMConfig,
+    VectorDBType,
+    LLMProvider,
+)
 
 async def architecture_analysis_example():
     """Пример анализа архитектуры проекта."""
@@ -492,7 +535,16 @@ import asyncio
 import os
 import json
 from datetime import datetime
-from gitprompt import GitIndexer, Config, VectorDBType, LLMProvider
+from gitprompt import (
+    GitIndexer,
+    Config,
+    VectorDBConfig,
+    LLMConfig,
+    DeploymentConfig,
+    DeploymentManager,
+    VectorDBType,
+    LLMProvider,
+)
 
 async def ci_cd_integration_example():
     """Пример интеграции с CI/CD pipeline."""
@@ -640,7 +692,14 @@ if __name__ == "__main__":
 ```python
 # В Jupyter Notebook
 import asyncio
-from gitprompt import GitIndexer, Config, VectorDBType, LLMProvider
+from gitprompt import (
+    GitIndexer,
+    Config,
+    VectorDBConfig,
+    LLMConfig,
+    VectorDBType,
+    LLMProvider,
+)
 import pandas as pd
 import matplotlib.pyplot as plt
 
@@ -744,8 +803,14 @@ class GitPromptNotebook:
 # Использование в Jupyter Notebook
 async def notebook_example():
     config = Config(
-        vector_db=VectorDBConfig(type=VectorDBType.CHROMA),
-        llm=LLMConfig(provider=LLMProvider.OPENAI, api_key="your-key")
+        vector_db=VectorDBConfig(
+            type=VectorDBType.CHROMA,
+            collection_name="notebook_index",
+        ),
+        llm=LLMConfig(
+            provider=LLMProvider.OPENAI,
+            api_key="your-key",
+        ),
     )
     
     notebook = GitPromptNotebook(config)
@@ -773,7 +838,14 @@ async def notebook_example():
 import asyncio
 import time
 import psutil
-from gitprompt import GitIndexer, Config, VectorDBType, LLMProvider
+from gitprompt import (
+    GitIndexer,
+    Config,
+    VectorDBConfig,
+    LLMConfig,
+    VectorDBType,
+    LLMProvider,
+)
 
 class PerformanceOptimizedIndexer:
     """Оптимизированный индексер для больших репозиториев."""
@@ -917,7 +989,14 @@ import json
 import time
 from datetime import datetime, timedelta
 from collections import defaultdict
-from gitprompt import GitIndexer, Config, VectorDBType, LLMProvider
+from gitprompt import (
+    GitIndexer,
+    Config,
+    VectorDBConfig,
+    LLMConfig,
+    VectorDBType,
+    LLMProvider,
+)
 
 class GitPromptAnalytics:
     """Система аналитики для GitPrompt."""

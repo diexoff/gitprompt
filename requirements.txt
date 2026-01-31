@@ -5,7 +5,7 @@ typing-extensions>=4.8.0
 
 # Vector databases
 chromadb>=0.4.22
-pinecone-client>=2.2.4
+pinecone>=2.2.0
 weaviate-client>=3.25.3
 qdrant-client>=1.7.0
 

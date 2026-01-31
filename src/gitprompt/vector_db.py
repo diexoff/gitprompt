@@ -3,7 +3,6 @@
 import asyncio
 from typing import List, Dict, Any, Optional
 import chromadb
-import pinecone
 import weaviate
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
@@ -145,6 +144,7 @@ class PineconeVectorDB(VectorDatabase):
     
     async def initialize(self) -> None:
         """Initialize Pinecone connection."""
+        import pinecone
         try:
             pinecone.init(
                 api_key=self.config.api_key,

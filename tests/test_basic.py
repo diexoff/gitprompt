@@ -156,18 +156,15 @@ class TestEmbeddingServices:
             model_name="text-embedding-ada-002"
         )
         
-        service = OpenAIEmbeddingService(config)
-        
-        # Mock the OpenAI client
-        with patch('gitprompt.embeddings.openai.AsyncOpenAI') as mock_client:
+        # Mock the OpenAI client before creating the service
+        with patch('gitprompt.embeddings.openai.AsyncOpenAI') as mock_client_class:
             mock_response = Mock()
             mock_response.data = [Mock()]
             mock_response.data[0].embedding = [0.1, 0.2, 0.3]
-            
-            mock_client.return_value.embeddings.create = AsyncMock(
+            mock_client_class.return_value.embeddings.create = AsyncMock(
                 return_value=mock_response
             )
-            
+            service = OpenAIEmbeddingService(config)
             embedding = await service.generate_embedding("test text")
             assert embedding == [0.1, 0.2, 0.3]
     
@@ -181,16 +178,15 @@ class TestEmbeddingServices:
             model_name="all-MiniLM-L6-v2"
         )
         
-        service = SentenceTransformersEmbeddingService(config)
-        
-        # Mock the SentenceTransformer model
-        with patch('gitprompt.embeddings.SentenceTransformer') as mock_model:
-            mock_model.return_value.encode.return_value = [0.1, 0.2, 0.3]
-            mock_model.return_value.get_sentence_embedding_dimension.return_value = 384
-            
+        # Mock SentenceTransformer at source (import in __init__ is from sentence_transformers)
+        with patch('sentence_transformers.SentenceTransformer') as mock_model_class:
+            mock_encode_result = Mock()
+            mock_encode_result.tolist.return_value = [0.1, 0.2, 0.3]
+            mock_model_class.return_value.encode.return_value = mock_encode_result
+            mock_model_class.return_value.get_sentence_embedding_dimension.return_value = 384
+            service = SentenceTransformersEmbeddingService(config)
             embedding = await service.generate_embedding("test text")
             assert embedding == [0.1, 0.2, 0.3]
-            
             dimension = service.get_embedding_dimension()
             assert dimension == 384
 
@@ -254,7 +250,8 @@ class TestGitParser:
         
         config = GitConfig(
             include_patterns=["**/*.py"],
-            chunk_size=100
+            chunk_size=100,
+            chunk_overlap=20,  # must be < chunk_size, else step is negative and no chunks
         )
         parser = GitRepositoryParser(config)
         
@@ -265,7 +262,8 @@ class TestGitParser:
                 f.write("print('Hello, World!')\nprint('Another line')")
             
             chunks = await parser._parse_folder(temp_dir)
-            
+            print("PRINTING CHUNKS>>>")
+            print(chunks)
             assert len(chunks) > 0
             assert chunks[0].file_path == "test.py"
             assert "Hello, World!" in chunks[0].content

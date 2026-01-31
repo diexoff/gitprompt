@@ -104,19 +104,18 @@ class GitRepositoryParser(GitParser):
     async def get_file_content(self, repo_path: str, file_path: str, branch: Optional[str] = None) -> str:
         """Get content of a specific file."""
         try:
-            repo = Repo(repo_path)
-            
             if branch:
-                # Get file content from specific branch
+                repo = Repo(repo_path)
                 commit = repo.commit(branch)
                 blob = commit.tree / file_path
                 return blob.data_stream.read().decode('utf-8')
-            else:
-                # Get current file content
-                full_path = os.path.join(repo_path, file_path)
-                with open(full_path, 'r', encoding='utf-8') as f:
-                    return f.read()
-        
+            # Current file content: read from disk (works for non-git folders too)
+            full_path = os.path.join(repo_path, file_path)
+            if not os.path.exists(full_path):
+                # File is in git tree but missing on disk (e.g. deleted, not committed)
+                return ""
+            with open(full_path, 'r', encoding='utf-8') as f:
+                return f.read()
         except Exception as e:
             print(f"Error reading file {file_path}: {e}")
             return ""
@@ -133,14 +132,27 @@ class GitRepositoryParser(GitParser):
         """Check if file should be included based on patterns."""
         # Check exclude patterns first
         for pattern in self.config.exclude_patterns:
-            if fnmatch.fnmatch(file_path, pattern):
+            if self._path_matches_pattern(file_path, pattern):
                 return False
         
         # Check include patterns
         for pattern in self.config.include_patterns:
-            if fnmatch.fnmatch(file_path, pattern):
+            if self._path_matches_pattern(file_path, pattern):
                 return True
         
+        return False
+
+    def _path_matches_pattern(self, file_path: str, pattern: str) -> bool:
+        """Check if path matches pattern, supporting ** for recursive match."""
+        if fnmatch.fnmatch(file_path, pattern):
+            return True
+        # Support **/prefix: match basename or full path with suffix
+        if pattern.startswith("**/"):
+            suffix = pattern[3:]
+            if fnmatch.fnmatch(file_path, suffix):
+                return True
+            if fnmatch.fnmatch(os.path.basename(file_path), suffix):
+                return True
         return False
     
     async def _chunk_file(self, repo_path: str, file_path: str) -> List[FileChunk]:
@@ -182,7 +194,9 @@ class GitRepositoryParser(GitParser):
         for root, dirs, files in os.walk(folder_path):
             # Skip excluded directories
             dirs[:] = [d for d in dirs if not any(
-                fnmatch.fnmatch(os.path.join(root, d), pattern) 
+                self._path_matches_pattern(
+                    os.path.relpath(os.path.join(root, d), folder_path), pattern
+                )
                 for pattern in self.config.exclude_patterns
             )]
             

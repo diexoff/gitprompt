@@ -190,6 +190,13 @@ class TestGitConfig:
         assert "**/.git/**" in config.exclude_patterns
         assert "**/__pycache__/**" in config.exclude_patterns
 
+    def test_chunk_overlap_less_than_chunk_size(self):
+        """chunk_overlap must be less than chunk_size."""
+        with pytest.raises(ValueError, match="chunk_overlap.*must be less than chunk_size"):
+            GitConfig(chunk_size=100, chunk_overlap=100)
+        with pytest.raises(ValueError, match="chunk_overlap.*must be less than chunk_size"):
+            GitConfig(chunk_size=100, chunk_overlap=200)
+
 
 class TestDeploymentConfig:
     """Test DeploymentConfig class."""
@@ -307,13 +314,13 @@ class TestConfig:
             )
         )
         
-        # Test dict conversion
-        config_dict = config.dict()
+        # Test dict conversion (Pydantic v2)
+        config_dict = config.model_dump()
         assert config_dict['vector_db']['type'] == 'chroma'
         assert config_dict['llm']['provider'] == 'openai'
         
-        # Test JSON serialization
-        config_json = config.json()
+        # Test JSON serialization (Pydantic v2)
+        config_json = config.model_dump_json()
         assert 'chroma' in config_json
         assert 'openai' in config_json
     

@@ -5,7 +5,6 @@ from typing import List, Optional
 import openai
 import anthropic
 import cohere
-from sentence_transformers import SentenceTransformer
 
 from .interfaces import EmbeddingService
 from .config import LLMConfig, LLMProvider
@@ -77,14 +76,9 @@ class AnthropicEmbeddingService(EmbeddingService):
     
     async def generate_embedding(self, text: str) -> List[float]:
         """Generate embedding for a single text."""
-        try:
-            # Note: Anthropic doesn't have direct embedding API, 
-            # this is a placeholder for future implementation
-            # You might need to use a different approach or wait for Anthropic's embedding API
-            raise NotImplementedError("Anthropic embedding API not yet available")
-        except Exception as e:
-            print(f"Error generating Anthropic embedding: {e}")
-            return []
+        # Note: Anthropic doesn't have direct embedding API,
+        # this is a placeholder for future implementation.
+        raise NotImplementedError("Anthropic embedding API not yet available")
     
     async def generate_embeddings_batch(self, texts: List[str]) -> List[List[float]]:
         """Generate embeddings for multiple texts."""
@@ -153,8 +147,9 @@ class CohereEmbeddingService(EmbeddingService):
 
 class SentenceTransformersEmbeddingService(EmbeddingService):
     """Sentence Transformers embedding service implementation."""
-    
+
     def __init__(self, config: LLMConfig):
+        from sentence_transformers import SentenceTransformer
         self.config = config
         self.model = SentenceTransformer(config.model_name)
         self._dimension = None

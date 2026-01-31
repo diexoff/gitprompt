@@ -1,12 +1,20 @@
 """Pytest configuration and fixtures for GitPrompt tests."""
 
+import sys
+from pathlib import Path
+
+# Allow running tests without installing the package (e.g. from project root)
+_project_root = Path(__file__).resolve().parent
+_src = _project_root / "src"
+if _src.exists() and str(_src) not in sys.path:
+    sys.path.insert(0, str(_src))
+
 import pytest
 import tempfile
 import os
 import asyncio
-from pathlib import Path
 
-from gitprompt import Config, VectorDBType, LLMProvider, VectorDBConfig, LLMConfig
+from gitprompt import Config, VectorDBType, LLMProvider, VectorDBConfig, LLMConfig, GitConfig
 
 
 @pytest.fixture

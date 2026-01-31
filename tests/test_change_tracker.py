@@ -144,15 +144,12 @@ class TestGitChangeTracker:
             mock_repo = Mock()
             mock_repo_class.return_value = mock_repo
             
-            # Mock staged changes
+            # Mock staged changes (diff("HEAD")) and unstaged changes (diff(None))
             mock_staged_diff = Mock()
             mock_staged_diff.a_path = "main.py"
-            mock_repo.index.diff.return_value = [mock_staged_diff]
-            
-            # Mock unstaged changes
             mock_unstaged_diff = Mock()
             mock_unstaged_diff.a_path = "utils.py"
-            mock_repo.index.diff.return_value = [mock_unstaged_diff]
+            mock_repo.index.diff.side_effect = [[mock_staged_diff], [mock_unstaged_diff]]
             
             changes = await git_tracker._get_uncommitted_changes(mock_repo)
             
@@ -177,8 +174,8 @@ class TestGitChangeTracker:
                 with open(full_path, 'w') as f:
                     f.write(content)
             
-            # Mock tracked files
-            with patch.object(git_tracker, '_get_tracked_files') as mock_tracked:
+            # Mock tracked files (async method)
+            with patch.object(git_tracker, '_get_tracked_files', new_callable=AsyncMock) as mock_tracked:
                 mock_tracked.return_value = ["main.py", "utils.py"]
                 
                 # Set initial hashes
@@ -428,14 +425,13 @@ class TestFileSystemChangeTracker:
                 with open(full_path, 'w') as f:
                     f.write(content)
             
-            # First scan - should detect new files
+            # First scan - should detect new files (order may vary)
             changes = await fs_tracker._detect_filesystem_changes(temp_dir)
-            
             assert len(changes) == 2
-            assert changes[0].file_path == "main.py"
-            assert changes[0].change_type == ChangeType.ADDED
-            assert changes[1].file_path == "utils.js"
-            assert changes[1].change_type == ChangeType.ADDED
+            paths = {c.file_path for c in changes}
+            assert paths == {"main.py", "utils.js"}
+            for c in changes:
+                assert c.change_type == ChangeType.ADDED
             
             # Second scan - should detect no changes
             changes = await fs_tracker._detect_filesystem_changes(temp_dir)
