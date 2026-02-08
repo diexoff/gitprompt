@@ -117,24 +117,28 @@ class TestGitRepository:
                 )
                 
                 # Mock the vector database
-                with patch.object(repo.vector_db, 'store_embeddings') as mock_store:
-                    mock_store.return_value = AsyncMock()
-                    
-                    # Mock initialization
-                    with patch.object(repo, 'initialize') as mock_init:
-                        mock_init.return_value = AsyncMock()
+                with patch.object(
+                    repo.vector_db, 'delete_embeddings_not_in', new_callable=AsyncMock, return_value=0
+                ) as mock_delete_stale:
+                    with patch.object(repo.vector_db, 'store_embeddings') as mock_store:
+                        mock_store.return_value = AsyncMock()
                         
-                        result = await repo.index_repository()
-                        
-                        assert result['total_files'] == 1
-                        assert result['total_chunks'] == 1
-                        assert result['total_embeddings'] == 1
-                        
-                        mock_parse.assert_called_once_with(
-                            temp_dir, None, index_working_tree=False
-                        )
-                        mock_embeddings.assert_called_once_with(mock_chunks)
-                        mock_store.assert_called_once()
+                        # Mock initialization
+                        with patch.object(repo, 'initialize') as mock_init:
+                            mock_init.return_value = AsyncMock()
+                            
+                            result = await repo.index_repository()
+                            
+                            assert result['total_files'] == 1
+                            assert result['total_chunks'] == 1
+                            assert result['total_embeddings'] == 1
+                            
+                            mock_parse.assert_called_once_with(
+                                temp_dir, None, index_working_tree=False
+                            )
+                            mock_embeddings.assert_called_once_with(mock_chunks)
+                            mock_delete_stale.assert_called_once_with(temp_dir, ['main.py:0'])
+                            mock_store.assert_called_once()
     
     @pytest.mark.asyncio
     async def test_git_repository_index_changes(self, test_repo):
@@ -180,23 +184,26 @@ class TestGitRepository:
                 )
                 
                 # Mock the vector database
-                with patch.object(repo.vector_db, 'store_embeddings') as mock_store:
-                    mock_store.return_value = AsyncMock()
-                    
-                    # Mock initialization
-                    with patch.object(repo, 'initialize') as mock_init:
-                        mock_init.return_value = AsyncMock()
+                with patch.object(
+                    repo.vector_db, 'delete_embeddings_not_in', new_callable=AsyncMock, return_value=0
+                ):
+                    with patch.object(repo.vector_db, 'store_embeddings') as mock_store:
+                        mock_store.return_value = AsyncMock()
                         
-                        result = await repo.index_changes(changes)
-                        
-                        assert result['processed_files'] == 1
-                        assert result['new_chunks'] == 1
-                        assert result['updated_chunks'] == 0
-                        assert result['deleted_chunks'] == 0
-                        
-                        mock_chunk.assert_called_once_with(temp_dir, "main.py")
-                        mock_embeddings.assert_called_once_with(mock_chunks)
-                        mock_store.assert_called_once()
+                        # Mock initialization
+                        with patch.object(repo, 'initialize') as mock_init:
+                            mock_init.return_value = AsyncMock()
+                            
+                            result = await repo.index_changes(changes)
+                            
+                            assert result['processed_files'] == 1
+                            assert result['new_chunks'] == 1
+                            assert result['updated_chunks'] == 0
+                            assert result['deleted_chunks'] == 0
+                            
+                            mock_chunk.assert_called_once_with(temp_dir, "main.py")
+                            mock_embeddings.assert_called_once_with(mock_chunks)
+                            mock_store.assert_called_once()
     
     @pytest.mark.asyncio
     async def test_git_repository_search_similar(self, test_repo):

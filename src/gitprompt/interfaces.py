@@ -59,14 +59,27 @@ class VectorDatabase(ABC):
         pass
     
     @abstractmethod
-    async def search_similar(self, query_vector: List[float], limit: int = 10) -> List[Dict[str, Any]]:
-        """Search for similar embeddings."""
+    async def search_similar(
+        self,
+        query_vector: List[float],
+        limit: int = 10,
+        where_metadata: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Search for similar embeddings. where_metadata: filter by metadata (e.g. repository_path)."""
         pass
     
     @abstractmethod
     async def delete_embeddings(self, chunk_ids: List[str]) -> None:
         """Delete embeddings by chunk IDs."""
         pass
+
+    async def delete_embeddings_not_in(
+        self, repository_path: str, keep_chunk_ids: List[str]
+    ) -> int:
+        """Delete embeddings for this repository whose chunk_id is not in keep_chunk_ids.
+        Used on re-index to remove stale entries. Returns number of deleted entries.
+        Default: no-op (override in backends), returns 0."""
+        return 0
     
     @abstractmethod
     async def update_embedding(self, embedding: Embedding) -> None:

@@ -41,7 +41,14 @@ def _ensure_content_hash_str(meta: Dict[str, Any]) -> None:
 
 import weaviate
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct
+from qdrant_client.models import (
+    Distance,
+    VectorParams,
+    PointStruct,
+    Filter,
+    FieldCondition,
+    MatchValue,
+)
 
 from .interfaces import VectorDatabase, Embedding
 from .config import VectorDBConfig, VectorDBType
@@ -109,16 +116,24 @@ class ChromaVectorDB(VectorDatabase):
             print(f"Error storing embeddings in ChromaDB: {e}")
             raise
     
-    async def search_similar(self, query_vector: List[float], limit: int = 10) -> List[Dict[str, Any]]:
-        """Search for similar embeddings in ChromaDB."""
+    async def search_similar(
+        self,
+        query_vector: List[float],
+        limit: int = 10,
+        where_metadata: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Search for similar embeddings in ChromaDB. where_metadata — фильтр по metadata (только записи репозитория)."""
         if not self.collection:
             await self.initialize()
         
         try:
-            results = self.collection.query(
-                query_embeddings=[query_vector],
-                n_results=limit
-            )
+            kwargs: Dict[str, Any] = {
+                "query_embeddings": [query_vector],
+                "n_results": limit,
+            }
+            if where_metadata:
+                kwargs["where"] = where_metadata
+            results = self.collection.query(**kwargs)
             
             # Convert to standard format; не используем булевы проверки над массивами Chroma (numpy)
             ids_raw = _to_list(results.get("ids"))
@@ -163,7 +178,47 @@ class ChromaVectorDB(VectorDatabase):
             self.collection.delete(ids=chunk_ids)
         except Exception as e:
             print(f"Error deleting embeddings from ChromaDB: {e}")
-    
+
+    async def delete_embeddings_not_in(
+        self, repository_path: str, keep_chunk_ids: List[str]
+    ) -> int:
+        """Удаляет эмбеддинги репозитория, чей chunk_id не в keep_chunk_ids (при переиндексации).
+        Возвращает количество удалённых записей. Обход с пагинацией, чтобы получить все ключи."""
+        if not self.collection:
+            await self.initialize()
+        keep = set(keep_chunk_ids)
+        all_ids: List[str] = []
+        limit = 10000
+        offset = 0
+        try:
+            while True:
+                results = self.collection.get(
+                    where={"repository_path": repository_path},
+                    include=[],
+                    limit=limit,
+                    offset=offset,
+                )
+                ids_raw = _to_list(results.get("ids"))
+                if not ids_raw:
+                    break
+                flat = ids_raw[0] if ids_raw and isinstance(ids_raw[0], (list, tuple)) else ids_raw
+                page = [_to_py_str(x) for x in _to_list(flat)]
+                if not page:
+                    break
+                all_ids.extend(page)
+                if len(page) < limit:
+                    break
+                offset += limit
+            to_delete = [i for i in all_ids if i not in keep]
+            if to_delete:
+                for start in range(0, len(to_delete), 100):
+                    batch = to_delete[start : start + 100]
+                    self.collection.delete(ids=batch)
+            return len(to_delete)
+        except Exception as e:
+            print(f"Error deleting stale embeddings from ChromaDB: {e}")
+            return 0
+
     async def update_embedding(self, embedding: Embedding) -> None:
         """Update an existing embedding."""
         if not self.collection:
@@ -345,17 +400,28 @@ class PineconeVectorDB(VectorDatabase):
             print(f"Error storing embeddings in Pinecone: {e}")
             raise
     
-    async def search_similar(self, query_vector: List[float], limit: int = 10) -> List[Dict[str, Any]]:
-        """Search for similar embeddings in Pinecone."""
+    async def search_similar(
+        self,
+        query_vector: List[float],
+        limit: int = 10,
+        where_metadata: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Search for similar embeddings in Pinecone. where_metadata — фильтр по metadata (только записи репозитория)."""
         if not self.index:
             await self.initialize()
         
         try:
-            results = self.index.query(
-                vector=query_vector,
-                top_k=limit,
-                include_metadata=True
-            )
+            query_kwargs: Dict[str, Any] = {
+                "vector": query_vector,
+                "top_k": limit,
+                "include_metadata": True,
+            }
+            if where_metadata:
+                # Pinecone: filter={"key": {"$eq": value}}
+                query_kwargs["filter"] = {
+                    k: {"$eq": v} for k, v in where_metadata.items()
+                }
+            results = self.index.query(**query_kwargs)
             
             similar_items = []
             for match in results['matches']:
@@ -472,17 +538,30 @@ class QdrantVectorDB(VectorDatabase):
             print(f"Error storing embeddings in Qdrant: {e}")
             raise
     
-    async def search_similar(self, query_vector: List[float], limit: int = 10) -> List[Dict[str, Any]]:
-        """Search for similar embeddings in Qdrant."""
+    async def search_similar(
+        self,
+        query_vector: List[float],
+        limit: int = 10,
+        where_metadata: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Search for similar embeddings in Qdrant. where_metadata — фильтр по payload (только записи репозитория)."""
         if not self.client:
             await self.initialize()
         
         try:
-            results = self.client.search(
-                collection_name=self.config.collection_name,
-                query_vector=query_vector,
-                limit=limit
-            )
+            query_kwargs: Dict[str, Any] = {
+                "collection_name": self.config.collection_name,
+                "query_vector": query_vector,
+                "limit": limit,
+            }
+            if where_metadata:
+                query_kwargs["query_filter"] = Filter(
+                    must=[
+                        FieldCondition(key=k, match=MatchValue(value=v))
+                        for k, v in where_metadata.items()
+                    ]
+                )
+            results = self.client.search(**query_kwargs)
             
             similar_items = []
             for result in results:

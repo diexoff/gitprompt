@@ -114,6 +114,7 @@ class GitRepository:
                         "total_files": 0,
                         "total_chunks": 0,
                         "total_embeddings": 0,
+                        "deleted_stale": 0,
                     }
 
                 # Phase 2: embeddings
@@ -138,23 +139,46 @@ class GitRepository:
                     f"ошибок (не проиндексировано): [bold]{embed_stats.get('failed', 0)}[/bold]"
                 )
 
-                # Phase 3: storing (все эмбеддинги — кэшированные уже с нужным chunk_id)
+                # Phase 3: удаляем устаревшие ключи (файлы/чанки, которых уже нет), затем сохраняем
+                current_chunk_ids = [c.chunk_id for c in chunks]
+                deleted_count = await self.vector_db.delete_embeddings_not_in(
+                    self.path, current_chunk_ids
+                )
+                if deleted_count > 0:
+                    progress.console.print(
+                        f"    Удалено устаревших записей в БД (файлы/чанки вне текущего индекса): "
+                        f"[bold]{deleted_count}[/bold]"
+                    )
                 task_store = progress.add_task("Сохранение в векторную БД...", total=None)
                 await self.vector_db.store_embeddings(embeddings)
                 progress.update(task_store, completed=1, total=1)
                 progress.remove_task(task_store)
-                progress.console.print("  [green]✓[/green] Готово.")
+                progress.console.print(
+                    f"  [green]✓[/green] Готово. В индексе: [bold]{total_files}[/bold] файлов, "
+                    f"[bold]{len(chunks)}[/bold] чанков."
+                )
+                if deleted_count > 0:
+                    progress.console.print(
+                        f"  [green]✓[/green] Удалено устаревших записей: [bold]{deleted_count}[/bold]"
+                    )
         else:
             chunks = await self.parser.parse_repository(
                 self.path, branch, index_working_tree=index_working_tree
             )
             embeddings, _ = await self._generate_embeddings(chunks)
+            current_chunk_ids = [c.chunk_id for c in chunks]
+            deleted_count = await self.vector_db.delete_embeddings_not_in(
+                self.path, current_chunk_ids
+            )
             await self.vector_db.store_embeddings(embeddings)
+            if verbose and deleted_count > 0:
+                print(f"  [индекс] Удалено устаревших записей в БД: {deleted_count}")
 
         return {
             "total_files": len(set(chunk.file_path for chunk in chunks)),
             "total_chunks": len(chunks),
             "total_embeddings": len(embeddings),
+            "deleted_stale": deleted_count,
         }
     
     async def index_changes(self, changes: List[FileChange]) -> Dict[str, Any]:
@@ -197,8 +221,12 @@ class GitRepository:
         # Generate embedding for query
         query_embedding = await self.embedding_service.generate_embedding(query)
         
-        # Search in vector database
-        results = await self.vector_db.search_similar(query_embedding, limit)
+        # Search in vector database (только записи этого репозитория)
+        results = await self.vector_db.search_similar(
+            query_embedding,
+            limit,
+            where_metadata={"repository_path": self.path},
+        )
         
         return results
     
@@ -279,7 +307,7 @@ class GitRepository:
                 emb_hash = (emb.metadata or {}).get("content_hash")
                 emb_hash = str(emb_hash).strip() if emb_hash is not None else ""
                 if chunk_hash and emb_hash == chunk_hash:
-                    meta = {**chunk.metadata, "from_cache": True}
+                    meta = {**chunk.metadata, "from_cache": True, "repository_path": self.path}
                     meta.setdefault("content_hash", self._content_hash(chunk.file_path, chunk.content))
                     result_by_index[i] = Embedding(
                         vector=emb.vector,
@@ -322,7 +350,7 @@ class GitRepository:
                 )
                 for chunk, vec in zip(batch_chunks, batch_vectors):
                     if vec:
-                        meta = {**chunk.metadata, "from_cache": False}
+                        meta = {**chunk.metadata, "from_cache": False, "repository_path": self.path}
                         meta.setdefault("content_hash", self._content_hash(chunk.file_path, chunk.content))
                         new_embeddings.append(
                             Embedding(
