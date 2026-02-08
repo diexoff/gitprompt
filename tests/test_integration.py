@@ -104,8 +104,8 @@ class TestVectorDatabaseIntegration:
         
         db = ChromaVectorDB(config)
         
-        # Mock ChromaDB client
-        with patch('gitprompt.vector_db.chromadb.Client') as mock_client_class:
+        # Mock ChromaDB client (local uses PersistentClient)
+        with patch('gitprompt.vector_db.chromadb.PersistentClient') as mock_client_class:
             mock_client = Mock()
             mock_collection = Mock()
             mock_client.get_collection.side_effect = Exception("Collection not found")
@@ -127,8 +127,8 @@ class TestVectorDatabaseIntegration:
             # Store embedding
             await db.store_embeddings([embedding])
             
-            # Verify that collection.add was called
-            mock_collection.add.assert_called_once()
+            # Verify that collection.upsert was called (upsert updates existing ids)
+            mock_collection.upsert.assert_called_once()
             
             # Test search
             mock_collection.query.return_value = {

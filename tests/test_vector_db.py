@@ -37,7 +37,7 @@ class TestChromaVectorDB:
     @pytest.mark.asyncio
     async def test_initialize_local(self, chroma_db):
         """Test ChromaDB initialization (local)."""
-        with patch('gitprompt.vector_db.chromadb.Client') as mock_client_class:
+        with patch('gitprompt.vector_db.chromadb.PersistentClient') as mock_client_class:
             mock_client = Mock()
             mock_collection = Mock()
             mock_client.get_collection.side_effect = Exception("Collection not found")
@@ -103,7 +103,7 @@ class TestChromaVectorDB:
         
         await chroma_db.store_embeddings(embeddings)
         
-        call_kw = mock_collection.add.call_args[1]
+        call_kw = mock_collection.upsert.call_args[1]
         assert call_kw["ids"] == ["test1", "test2"]
         assert call_kw["embeddings"] == [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]
         assert call_kw["documents"] == ["test content", "test content 2"]
@@ -326,7 +326,8 @@ class TestPineconeVectorDB:
                 'metadata': {
                     'content': 'test content',
                     'file_path': 'test.py',
-                    'file_size': 20
+                    'file_size': 20,
+                    'content_hash': '',
                 }
             }]
         )

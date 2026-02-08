@@ -110,23 +110,18 @@ class TestGitRepositoryParser:
             
             mock_tree.traverse.return_value = mock_items
             
-            # Mock the _chunk_file method
-            with patch.object(parser, '_chunk_file') as mock_chunk:
-                mock_chunk.return_value = [
-                    FileChunk(
-                        file_path="main.py",
-                        content="print('Hello, World!')",
-                        start_line=1,
-                        end_line=1,
-                        chunk_id="main.py:0",
-                        metadata={"file_size": 20}
-                    )
-                ]
-                
+            # Чтение из git (HEAD) в парсере — мокаем _read_file_sync, чтобы не зависеть от Repo.commit().tree
+            def read_from_disk(repo_path, file_path, branch):
+                full = os.path.join(repo_path, file_path)
+                if os.path.isfile(full):
+                    with open(full, "r", encoding="utf-8", errors="replace") as f:
+                        return f.read()
+                return ""
+
+            with patch.object(parser, '_read_file_sync', side_effect=read_from_disk):
                 chunks = await parser.parse_repository(test_repo)
-                
+
                 assert len(chunks) > 0
-                mock_chunk.assert_called()
     
     @pytest.mark.asyncio
     async def test_get_changes(self, mock_config, test_repo):

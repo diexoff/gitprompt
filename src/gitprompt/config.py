@@ -31,6 +31,8 @@ class VectorDBConfig(BaseModel):
     api_key: Optional[str] = None
     collection_name: str = "gitprompt_embeddings"
     dimension: Optional[int] = None
+    """Для Chroma без host: каталог для персистентного хранилища (иначе БД in-memory и кэш не сохраняется между запусками)."""
+    persist_directory: Optional[str] = None
     additional_params: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -52,14 +54,18 @@ class GitConfig(BaseModel):
         "**/node_modules/**", "**/.git/**", "**/__pycache__/**",
         "**/env/**", "**/venv/**", "**/.venv/**",
     ])
-    chunk_size: int = 1000
-    chunk_overlap: int = 200
+    """Размер чанка в токенах (лимит API эмбеддингов, напр. GigaChat 514)."""
+    chunk_size: int = 500
+    """Перекрытие между соседними чанками в токенах."""
+    chunk_overlap: int = 50
+    """Символов на токен для подсчёта (напр. GigaChat: 3). Если задано, используется вместо tiktoken."""
+    chars_per_token: Optional[int] = None
     track_submodules: bool = True
     track_remote: bool = False
 
     @model_validator(mode="after")
     def chunk_size_exceeds_overlap(self) -> "GitConfig":
-        """chunk_size must be greater than chunk_overlap, else chunking step is non-positive."""
+        """chunk_overlap must be less than chunk_size (both in tokens)."""
         if self.chunk_overlap >= self.chunk_size:
             raise ValueError(
                 f"chunk_overlap ({self.chunk_overlap}) must be less than chunk_size ({self.chunk_size}), "
@@ -85,6 +91,15 @@ class Config(BaseModel):
     llm: LLMConfig
     git: GitConfig = Field(default_factory=GitConfig)
     deployment: DeploymentConfig = Field(default_factory=DeploymentConfig)
+
+    @model_validator(mode="after")
+    def gigachat_chars_per_token(self) -> "Config":
+        """Для GigaChat по умолчанию 1 токен = 3 символа (как считает API)."""
+        if self.llm.provider == LLMProvider.GIGACHAT and self.git.chars_per_token is None:
+            return self.model_copy(
+                update={"git": self.git.model_copy(update={"chars_per_token": 3})}
+            )
+        return self
 
     # Global settings
     cache_dir: str = ".gitprompt_cache"

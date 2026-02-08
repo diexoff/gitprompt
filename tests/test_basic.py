@@ -207,13 +207,14 @@ class TestVectorDatabases:
         
         db = ChromaVectorDB(config)
         
-        # Mock ChromaDB client
+        # Mock ChromaDB client (local uses PersistentClient, not Client)
         with patch('gitprompt.vector_db.chromadb') as mock_chromadb:
             mock_client = Mock()
             mock_collection = Mock()
             mock_client.get_collection.side_effect = Exception("Collection not found")
             mock_client.create_collection.return_value = mock_collection
-            mock_chromadb.Client.return_value = mock_client
+            mock_chromadb.PersistentClient.return_value = mock_client
+            mock_chromadb.HttpClient.return_value = mock_client
             
             await db.initialize()
             
@@ -227,7 +228,7 @@ class TestVectorDatabases:
             )
             
             await db.store_embeddings([embedding])
-            mock_collection.add.assert_called_once()
+            mock_collection.upsert.assert_called_once()
 
 
 class TestGitParser:

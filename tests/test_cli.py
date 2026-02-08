@@ -130,7 +130,7 @@ class TestCLI:
 
                 mock_indexer_class.assert_called()
                 mock_indexer.index_repository.assert_called_with(
-                    temp_dir, None, verbose=False
+                    temp_dir, None, verbose=False, index_working_tree=False
                 )
     
     @pytest.mark.asyncio

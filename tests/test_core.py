@@ -101,17 +101,20 @@ class TestGitRepository:
             ]
             mock_parse.return_value = mock_chunks
             
-            # Mock the embedding service
+            # Mock the embedding service (_generate_embeddings returns (embeddings, stats))
             with patch.object(repo, '_generate_embeddings') as mock_embeddings:
-                mock_embeddings.return_value = [
-                    Embedding(
-                        vector=[0.1, 0.2, 0.3],
-                        chunk_id="main.py:0",
-                        file_path="main.py",
-                        content="print('Hello, World!')",
-                        metadata={"file_size": 20}
-                    )
-                ]
+                mock_embeddings.return_value = (
+                    [
+                        Embedding(
+                            vector=[0.1, 0.2, 0.3],
+                            chunk_id="main.py:0",
+                            file_path="main.py",
+                            content="print('Hello, World!')",
+                            metadata={"file_size": 20}
+                        )
+                    ],
+                    {"cached": 0, "new": 1, "failed": 0},
+                )
                 
                 # Mock the vector database
                 with patch.object(repo.vector_db, 'store_embeddings') as mock_store:
@@ -127,7 +130,9 @@ class TestGitRepository:
                         assert result['total_chunks'] == 1
                         assert result['total_embeddings'] == 1
                         
-                        mock_parse.assert_called_once_with(temp_dir, None)
+                        mock_parse.assert_called_once_with(
+                            temp_dir, None, index_working_tree=False
+                        )
                         mock_embeddings.assert_called_once_with(mock_chunks)
                         mock_store.assert_called_once()
     
@@ -159,17 +164,20 @@ class TestGitRepository:
             ]
             mock_chunk.return_value = mock_chunks
             
-            # Mock the embedding service
+            # Mock the embedding service (_generate_embeddings returns (embeddings, stats))
             with patch.object(repo, '_generate_embeddings') as mock_embeddings:
-                mock_embeddings.return_value = [
-                    Embedding(
-                        vector=[0.1, 0.2, 0.3],
-                        chunk_id="main.py:0",
-                        file_path="main.py",
-                        content="print('Hello, World!')",
-                        metadata={"file_size": 20}
-                    )
-                ]
+                mock_embeddings.return_value = (
+                    [
+                        Embedding(
+                            vector=[0.1, 0.2, 0.3],
+                            chunk_id="main.py:0",
+                            file_path="main.py",
+                            content="print('Hello, World!')",
+                            metadata={"file_size": 20}
+                        )
+                    ],
+                    {"cached": 0, "new": 1, "failed": 0},
+                )
                 
                 # Mock the vector database
                 with patch.object(repo.vector_db, 'store_embeddings') as mock_store:
@@ -281,23 +289,22 @@ class TestGitRepository:
             )
         ]
         
-        # Кэш по хешам пустой — оба чанка эмбеддятся
-        with patch.object(repo.vector_db, 'get_embeddings_by_content_hashes', new_callable=AsyncMock) as mock_get_hashes:
-            mock_get_hashes.return_value = {}
+        # Кэш по chunk_id пустой — оба чанка эмбеддятся
+        with patch.object(repo.vector_db, 'get_embeddings_by_chunk_ids', new_callable=AsyncMock) as mock_get_ids:
+            mock_get_ids.return_value = {}
             with patch.object(repo.embedding_service, 'generate_embeddings_batch') as mock_batch:
                 mock_batch.return_value = [
                     [0.1, 0.2, 0.3],
                     [0.4, 0.5, 0.6]
                 ]
-                embeddings = await repo._generate_embeddings(chunks)
-            
+                embeddings, _ = await repo._generate_embeddings(chunks)
             assert len(embeddings) == 2
             assert embeddings[0].vector == [0.1, 0.2, 0.3]
             assert embeddings[0].chunk_id == "main.py:0"
             assert embeddings[0].file_path == "main.py"
             assert embeddings[1].vector == [0.4, 0.5, 0.6]
             assert embeddings[1].chunk_id == "utils.py:0"
-            mock_get_hashes.assert_called_once()
+            mock_get_ids.assert_called()
             mock_batch.assert_called_once_with(["print('Hello, World!')", "def helper():\n    return 'helper'"])
     
     @pytest.mark.asyncio
@@ -324,18 +331,19 @@ class TestGitRepository:
                 metadata={"content_hash": h2}
             ),
         ]
+        # В БД по chunk_id main.py:0 лежит эмбеддинг с тем же content_hash — берём из кэша
         cached_emb = Embedding(
             vector=[0.9, 0.9, 0.9],
-            chunk_id="other.py:0",
-            file_path="other.py",
+            chunk_id="main.py:0",
+            file_path="main.py",
             content="c1",
             metadata={"content_hash": h1},
         )
-        with patch.object(repo.vector_db, 'get_embeddings_by_content_hashes', new_callable=AsyncMock) as mock_get:
-            mock_get.return_value = {h1: cached_emb}
+        with patch.object(repo.vector_db, 'get_embeddings_by_chunk_ids', new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = {"main.py:0": cached_emb}
             with patch.object(repo.embedding_service, 'generate_embeddings_batch') as mock_batch:
                 mock_batch.return_value = [[0.4, 0.5, 0.6]]
-                embeddings = await repo._generate_embeddings(chunks)
+                embeddings, _ = await repo._generate_embeddings(chunks)
         assert len(embeddings) == 2
         assert embeddings[0].vector == [0.9, 0.9, 0.9]
         assert embeddings[0].file_path == "main.py"
@@ -350,7 +358,7 @@ class TestGitRepository:
         repo = GitRepository(temp_dir, config)
         
         # Test with empty chunks
-        embeddings = await repo._generate_embeddings([])
+        embeddings, _ = await repo._generate_embeddings([])
         assert len(embeddings) == 0
     
     @pytest.mark.asyncio
@@ -372,13 +380,70 @@ class TestGitRepository:
             for i in range(150)  # More than batch_size
         ]
         
-        with patch.object(repo.vector_db, 'get_embeddings_by_content_hashes', new_callable=AsyncMock) as mock_get:
+        with patch.object(repo.vector_db, 'get_embeddings_by_chunk_ids', new_callable=AsyncMock) as mock_get:
             mock_get.return_value = {}
             with patch.object(repo.embedding_service, 'generate_embeddings_batch') as mock_batch:
                 mock_batch.return_value = [[0.1, 0.2, 0.3] for _ in range(100)]  # First batch
-                embeddings = await repo._generate_embeddings(chunks)
+                embeddings, _ = await repo._generate_embeddings(chunks)
             assert len(embeddings) == 150
             assert mock_batch.call_count == 2  # Two batches
+
+    @pytest.mark.asyncio
+    async def test_regenerated_embeddings_stored_with_correct_chunk_id(self, test_repo):
+        """При перегенерации (несовпадение хешей) эмбеддинги записываются в БД с нужным chunk_id."""
+        temp_dir, config = test_repo
+        repo = GitRepository(temp_dir, config)
+        h1, h2, h3 = "a" * 64, "b" * 64, "c" * 64
+        chunks = [
+            FileChunk(
+                file_path="a.py",
+                content="a",
+                start_line=1,
+                end_line=1,
+                chunk_id="a.py:0",
+                metadata={"content_hash": h1},
+            ),
+            FileChunk(
+                file_path="b.py",
+                content="b",
+                start_line=1,
+                end_line=1,
+                chunk_id="b.py:0",
+                metadata={"content_hash": h2},
+            ),
+            FileChunk(
+                file_path="c.py",
+                content="c",
+                start_line=1,
+                end_line=1,
+                chunk_id="c.py:0",
+                metadata={"content_hash": h3},
+            ),
+        ]
+        # Кэш пустой — все три перегенерируются
+        with patch.object(repo.vector_db, "get_embeddings_by_chunk_ids", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = {}
+            with patch.object(
+                repo.vector_db, "store_embeddings", new_callable=AsyncMock
+            ) as mock_store:
+                with patch.object(
+                    repo.embedding_service, "generate_embeddings_batch", new_callable=AsyncMock
+                ) as mock_batch:
+                    mock_batch.return_value = [
+                        [0.1] * 3,
+                        [0.2] * 3,
+                        [0.3] * 3,
+                    ]
+                    embeddings, _ = await repo._generate_embeddings(chunks)
+                    await repo.vector_db.store_embeddings(embeddings)
+        # Порядок и chunk_id должны совпадать с исходными чанками — в БД пишется id=chunk_id
+        expected_ids = [c.chunk_id for c in chunks]
+        stored_embeddings = mock_store.call_args[0][0]
+        assert len(stored_embeddings) == len(expected_ids)
+        for emb, expected_id in zip(stored_embeddings, expected_ids):
+            assert emb.chunk_id == expected_id, (
+                f"В БД должен записаться id={expected_id}, получен {emb.chunk_id}"
+            )
 
 
 class TestGitIndexer:
@@ -446,7 +511,9 @@ class TestGitIndexer:
                 assert result['total_embeddings'] == 1
                 
                 mock_repo.initialize.assert_called_once()
-                mock_repo.index_repository.assert_called_once_with(branch=None, verbose=None)
+                mock_repo.index_repository.assert_called_once_with(
+                    branch=None, verbose=None, index_working_tree=False
+                )
     
     @pytest.mark.asyncio
     async def test_git_indexer_index_repository_with_branch(self, mock_config):
@@ -472,7 +539,9 @@ class TestGitIndexer:
                 assert result['total_embeddings'] == 1
                 
                 mock_repo.initialize.assert_called_once()
-                mock_repo.index_repository.assert_called_once_with(branch="feature-branch", verbose=None)
+                mock_repo.index_repository.assert_called_once_with(
+                    branch="feature-branch", verbose=None, index_working_tree=False
+                )
     
     @pytest.mark.asyncio
     async def test_git_indexer_search_across_repositories(self, mock_config):

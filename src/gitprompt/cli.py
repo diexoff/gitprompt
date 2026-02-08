@@ -25,6 +25,11 @@ def create_parser() -> argparse.ArgumentParser:
     index_parser.add_argument("path", help="Path to repository or folder")
     index_parser.add_argument("--branch", help="Git branch to index")
     index_parser.add_argument("--verbose", "-v", action="store_true", help="Show progress bar and step messages")
+    index_parser.add_argument(
+        "--index-working-tree",
+        action="store_true",
+        help="Read files from disk (working copy) instead of commit; uncommitted changes will be indexed",
+    )
     index_parser.add_argument("--config", help="Path to configuration file")
     index_parser.add_argument("--output", help="Output file for results")
     
@@ -95,7 +100,10 @@ async def cmd_index(args) -> None:
 
     if not verbose:
         print(f"Indexing repository: {args.path}")
-    result = await indexer.index_repository(args.path, args.branch, verbose=verbose)
+    index_working_tree = getattr(args, "index_working_tree", False)
+    result = await indexer.index_repository(
+        args.path, args.branch, verbose=verbose, index_working_tree=index_working_tree
+    )
 
     if not verbose:
         print(f"Indexed {result['total_files']} files with {result['total_chunks']} chunks")

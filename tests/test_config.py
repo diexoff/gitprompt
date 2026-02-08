@@ -145,8 +145,8 @@ class TestGitConfig:
             branch="main",
             include_patterns=["**/*.py", "**/*.js"],
             exclude_patterns=["**/node_modules/**"],
-            chunk_size=1000,
-            chunk_overlap=200,
+            chunk_size=500,
+            chunk_overlap=50,
             track_submodules=True,
             track_remote=False
         )
@@ -154,20 +154,20 @@ class TestGitConfig:
         assert config.branch == "main"
         assert config.include_patterns == ["**/*.py", "**/*.js"]
         assert config.exclude_patterns == ["**/node_modules/**"]
-        assert config.chunk_size == 1000
-        assert config.chunk_overlap == 200
+        assert config.chunk_size == 500
+        assert config.chunk_overlap == 50
         assert config.track_submodules is True
         assert config.track_remote is False
     
     def test_default_values(self):
-        """Test default values."""
+        """Test default values (chunk_size/chunk_overlap in tokens)."""
         config = GitConfig()
         
         assert config.branch is None
         assert len(config.include_patterns) > 0
         assert len(config.exclude_patterns) > 0
-        assert config.chunk_size == 1000
-        assert config.chunk_overlap == 200
+        assert config.chunk_size == 500
+        assert config.chunk_overlap == 50
         assert config.track_submodules is True
         assert config.track_remote is False
     

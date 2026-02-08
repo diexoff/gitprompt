@@ -6,9 +6,9 @@ import os
 from typing import List, Optional, Dict, Any, Callable, Awaitable
 from pathlib import Path
 
-from .config import Config
+from .config import Config, LLMProvider
 from .interfaces import FileChunk, FileChange, Embedding
-from .git_parser import GitRepositoryParser
+from .git_parser import GitRepositoryParser, _get_token_counter
 from .embeddings import create_embedding_service
 from .vector_db import create_vector_database
 from .change_tracker import GitChangeTracker, FileSystemChangeTracker
@@ -52,6 +52,7 @@ class GitRepository:
         self,
         branch: Optional[str] = None,
         verbose: Optional[bool] = None,
+        index_working_tree: bool = False,
     ) -> Dict[str, Any]:
         """Index the entire repository.
 
@@ -59,6 +60,8 @@ class GitRepository:
             branch: Git branch to index (None = current).
             verbose: If True, show progress bar and step messages.
                      If None, use config.verbose.
+            index_working_tree: If True, read files from disk (working copy);
+                                if False, read from commit (branch/HEAD) for stable cache.
         """
         await self.initialize()
         show_progress = verbose if verbose is not None else getattr(
@@ -77,9 +80,26 @@ class GitRepository:
                 TaskProgressColumn(),
                 console=console,
             ) as progress:
-                # Phase 1: parsing
+                # Phase 1: parsing (в потоке; ждём с периодическим обновлением прогресса)
                 task_parse = progress.add_task("Парсинг репозитория...", total=None)
-                chunks = await self.parser.parse_repository(self.path, branch)
+                loop = asyncio.get_event_loop()
+                future = loop.run_in_executor(
+                    None,
+                    self.parser.parse_repository_sync,
+                    self.path,
+                    branch,
+                    show_progress,
+                    index_working_tree,
+                )
+                chunks = None
+                while not future.done():
+                    try:
+                        chunks = await asyncio.wait_for(asyncio.shield(future), timeout=0.2)
+                        break
+                    except asyncio.TimeoutError:
+                        progress.update(task_parse, refresh=True)
+                if chunks is None:
+                    chunks = await future
                 progress.update(task_parse, completed=1, total=1)
                 progress.remove_task(task_parse)
 
@@ -103,12 +123,19 @@ class GitRepository:
                 task_embed = progress.add_task(
                     "Генерация эмбеддингов...", total=len(chunks)
                 )
-                embeddings = await self._generate_embeddings(
-                    chunks, progress_callback=embed_progress
+                embeddings, embed_stats = await self._generate_embeddings(
+                    chunks,
+                    progress_callback=embed_progress,
+                    verbose=show_progress,
                 )
                 progress.remove_task(task_embed)
                 progress.console.print(
                     f"  [green]✓[/green] Эмбеддингов: [bold]{len(embeddings)}[/bold]"
+                )
+                progress.console.print(
+                    f"    из кэша (уже в БД): [bold]{embed_stats.get('cached', 0)}[/bold], "
+                    f"новых через API: [bold]{embed_stats.get('new', 0)}[/bold], "
+                    f"ошибок (не проиндексировано): [bold]{embed_stats.get('failed', 0)}[/bold]"
                 )
 
                 # Phase 3: storing (все эмбеддинги — кэшированные уже с нужным chunk_id)
@@ -118,8 +145,10 @@ class GitRepository:
                 progress.remove_task(task_store)
                 progress.console.print("  [green]✓[/green] Готово.")
         else:
-            chunks = await self.parser.parse_repository(self.path, branch)
-            embeddings = await self._generate_embeddings(chunks)
+            chunks = await self.parser.parse_repository(
+                self.path, branch, index_working_tree=index_working_tree
+            )
+            embeddings, _ = await self._generate_embeddings(chunks)
             await self.vector_db.store_embeddings(embeddings)
 
         return {
@@ -148,7 +177,7 @@ class GitRepository:
             elif change.change_type.value in ["added", "modified"]:
                 # Re-index changed files
                 chunks = await self.parser._chunk_file(self.path, change.file_path)
-                embeddings = await self._generate_embeddings(chunks)
+                embeddings, _ = await self._generate_embeddings(chunks)
                 
                 # Delete old embeddings first
                 await self._delete_file_embeddings(change.file_path)
@@ -206,79 +235,124 @@ class GitRepository:
         except ValueError:
             return file_path
 
+    def _content_hash(self, file_path: str, content: str) -> str:
+        """Считает content_hash для чанка (file_path + content). Один и тот же контент даёт один хеш."""
+        return hashlib.sha256(
+            (file_path + "\0" + content).encode("utf-8")
+        ).hexdigest()
+
     async def _generate_embeddings(
         self,
         chunks: List[FileChunk],
         progress_callback: Optional[Callable[[int, int], None]] = None,
-    ) -> List[Embedding]:
-        """Generate embeddings for file chunks. Чанки с уже сохранённым хешем не эмбеддятся повторно."""
+        verbose: bool = False,
+    ) -> tuple[List[Embedding], Dict[str, int]]:
+        """Generate embeddings for file chunks. Возвращает (embeddings, stats).
+        stats: cached — из БД по хешу, new — получены через API, failed — ошибки API."""
         if not chunks:
-            return []
+            return [], {"cached": 0, "new": 0, "failed": 0}
 
         total = len(chunks)
-        content_hashes = []
+        if verbose:
+            print(f"  [эмбеддинги] всего чанков: {total}")
         for c in chunks:
-            h = c.metadata.get("content_hash")
-            if not h:
-                h = hashlib.sha256(
-                    (c.file_path + "\0" + c.content).encode("utf-8")
-                ).hexdigest()
-                c.metadata["content_hash"] = h
-            content_hashes.append(h)
+            if not c.metadata.get("content_hash"):
+                c.metadata["content_hash"] = self._content_hash(c.file_path, c.content)
 
-        existing = await self.vector_db.get_embeddings_by_content_hashes(content_hashes)
-
+        # Достаём эмбеддинги по chunk_id батчами; берём из кэша только при совпадении content_hash.
+        # Если chunk_id не найден в БД или content_hash не совпадает — чанк идёт в chunks_to_embed.
         result_by_index: Dict[int, Embedding] = {}
-        chunks_to_embed: List[tuple] = []
+        chunk_ids = [c.chunk_id for c in chunks]
+        cache_batch_size = 100
+        for start in range(0, len(chunk_ids), cache_batch_size):
+            batch_ids = chunk_ids[start : start + cache_batch_size]
+            existing_batch = await self.vector_db.get_embeddings_by_chunk_ids(
+                batch_ids
+            )
+            for i, chunk in enumerate(chunks):
+                if chunk.chunk_id not in batch_ids:
+                    continue
+                emb = existing_batch.get(chunk.chunk_id)
+                if emb is None:
+                    continue
+                chunk_hash = (chunk.metadata.get("content_hash") or "").strip()
+                emb_hash = (emb.metadata or {}).get("content_hash")
+                emb_hash = str(emb_hash).strip() if emb_hash is not None else ""
+                if chunk_hash and emb_hash == chunk_hash:
+                    meta = {**chunk.metadata, "from_cache": True}
+                    meta.setdefault("content_hash", self._content_hash(chunk.file_path, chunk.content))
+                    result_by_index[i] = Embedding(
+                        vector=emb.vector,
+                        chunk_id=chunk.chunk_id,
+                        file_path=self._relative_file_path(chunk.file_path),
+                        content=chunk.content,
+                        metadata=meta,
+                    )
 
-        for i, chunk in enumerate(chunks):
-            h = content_hashes[i]
-            if h in existing:
-                emb = existing[h]
-                result_by_index[i] = Embedding(
-                    vector=emb.vector,
-                    chunk_id=chunk.chunk_id,
-                    file_path=self._relative_file_path(chunk.file_path),
-                    content=chunk.content,
-                    metadata={**chunk.metadata, "from_cache": True},
-                )
-            else:
-                chunks_to_embed.append((i, chunk))
 
+        chunks_to_embed = [(i, chunks[i]) for i in range(len(chunks)) if i not in result_by_index]
+
+        cached_count = len(result_by_index)
+        new_embeddings: List[Embedding] = []
+        if verbose:
+            print(
+                f"  [эмбеддинги] из кэша: {cached_count}, к генерации через API: {len(chunks_to_embed)}"
+            )
         if chunks_to_embed:
             chunks_only = [chunk for _, chunk in chunks_to_embed]
             texts = [c.content for c in chunks_only]
-            new_embeddings = []
+            verbose_gigachat = (
+                verbose and self.config.llm.provider == LLMProvider.GIGACHAT
+            )
+            if verbose_gigachat:
+                token_counter = _get_token_counter(self.config.git)
             for j in range(0, len(texts), self.config.llm.batch_size):
                 batch_texts = texts[j : j + self.config.llm.batch_size]
                 batch_chunks = chunks_only[j : j + self.config.llm.batch_size]
+                if verbose_gigachat:
+                    token_counts = [token_counter(t) for t in batch_texts]
+                    total_tokens = sum(token_counts)
+                    counts_str = ", ".join(str(n) for n in token_counts)
+                    print(
+                        f"  [GigaChat] батч чанков {j + 1}–{j + len(batch_texts)}: "
+                        f"размер в токенах по чанкам: {counts_str} (всего в батче: {total_tokens})"
+                    )
                 batch_vectors = await self.embedding_service.generate_embeddings_batch(
                     batch_texts
                 )
                 for chunk, vec in zip(batch_chunks, batch_vectors):
                     if vec:
+                        meta = {**chunk.metadata, "from_cache": False}
+                        meta.setdefault("content_hash", self._content_hash(chunk.file_path, chunk.content))
                         new_embeddings.append(
                             Embedding(
                                 vector=vec,
                                 chunk_id=chunk.chunk_id,
                                 file_path=self._relative_file_path(chunk.file_path),
                                 content=chunk.content,
-                                metadata={**chunk.metadata, "from_cache": False},
+                                metadata=meta,
                             )
                         )
+                done = cached_count + len(new_embeddings)
                 if progress_callback is not None:
-                    done = len(result_by_index) + len(new_embeddings)
                     progress_callback(done, total)
+                if verbose:
+                    print(f"  [эмбеддинги] обработано: {done}/{total} чанков")
+            # Сопоставляем новый эмбеддинг с индексом чанка: при записи в БД id = emb.chunk_id
             for k, (idx, _) in enumerate(chunks_to_embed):
                 if k < len(new_embeddings):
                     result_by_index[idx] = new_embeddings[k]
-                # При ошибках API (например 413) в батче может быть меньше эмбеддингов,
-                # чем чанков — пропускаем неудачные, не падаем с KeyError
 
+        failed_count = len(chunks_to_embed) - len(new_embeddings)
         result = [result_by_index[i] for i in range(len(chunks)) if i in result_by_index]
         if progress_callback is not None and not chunks_to_embed:
             progress_callback(total, total)
-        return result
+        stats = {
+            "cached": cached_count,
+            "new": len(new_embeddings),
+            "failed": failed_count,
+        }
+        return result, stats
     
     async def _delete_file_embeddings(self, file_path: str) -> None:
         """Delete all embeddings for a specific file."""
@@ -307,10 +381,14 @@ class GitIndexer:
         path: str,
         branch: Optional[str] = None,
         verbose: Optional[bool] = None,
+        index_working_tree: bool = False,
     ) -> Dict[str, Any]:
-        """Index a repository. If verbose is True or config.verbose, shows progress."""
+        """Index a repository. If verbose is True or config.verbose, shows progress.
+        index_working_tree: if True, index from disk (working copy); else from commit."""
         repo = await self.add_repository(path)
-        return await repo.index_repository(branch=branch, verbose=verbose)
+        return await repo.index_repository(
+            branch=branch, verbose=verbose, index_working_tree=index_working_tree
+        )
     
     async def search_across_repositories(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
         """Search across all indexed repositories."""

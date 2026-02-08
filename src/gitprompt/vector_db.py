@@ -3,6 +3,42 @@
 import asyncio
 from typing import List, Dict, Any, Optional
 import chromadb
+
+
+def _to_py_str(x: Any) -> str:
+    """Приводит значение из Chroma (м.б. numpy) к обычной str, без булевых проверок над массивами."""
+    if x is None:
+        return ""
+    if isinstance(x, str):
+        return x
+    if hasattr(x, "item"):  # numpy scalar
+        return str(x.item())
+    if hasattr(x, "tolist"):
+        t = x.tolist()
+        return t if isinstance(t, str) else str(t)
+    return str(x)
+
+
+def _to_list(x: Any) -> list:
+    """Безопасно приводит к list (не использовать 'x or []' — numpy array даёт ambiguous truth value)."""
+    if x is None:
+        return []
+    if isinstance(x, list):
+        return x
+    if hasattr(x, "tolist"):
+        return x.tolist()
+    return list(x)
+
+
+def _ensure_content_hash_str(meta: Dict[str, Any]) -> None:
+    """Приводит content_hash в metadata к str (все БД ожидают str/int/float/bool)."""
+    h = meta.get("content_hash")
+    if h is not None and not isinstance(h, str):
+        meta["content_hash"] = str(h)
+    elif not meta.get("content_hash"):
+        meta["content_hash"] = ""
+
+
 import weaviate
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
@@ -28,7 +64,10 @@ class ChromaVectorDB(VectorDatabase):
                     port=self.config.port or 8000
                 )
             else:
-                self.client = chromadb.Client()
+                path = getattr(
+                    self.config, "persist_directory", None
+                ) or self.config.additional_params.get("persist_directory", "./chroma_db")
+                self.client = chromadb.PersistentClient(path=path)
             
             # Get or create collection
             try:
@@ -48,12 +87,19 @@ class ChromaVectorDB(VectorDatabase):
             await self.initialize()
         
         try:
-            ids = [emb.chunk_id for emb in embeddings]
+            # Явно str(id), чтобы в Chroma не попадали numpy/другие типы — иначе кэш по id не совпадает после перезапуска
+            ids = [str(emb.chunk_id) for emb in embeddings]
             vectors = [emb.vector for emb in embeddings]
-            documents = [emb.content for emb in embeddings]
-            metadatas = [{"file_path": emb.file_path, **emb.metadata} for emb in embeddings]
-            
-            self.collection.add(
+            documents = [str(emb.content) for emb in embeddings]
+            # Явно включаем content_hash для поиска по кэшу; Chroma принимает только str/int/float/bool
+            metadatas = []
+            for emb in embeddings:
+                meta = {"file_path": emb.file_path, **emb.metadata}
+                _ensure_content_hash_str(meta)
+                metadatas.append(meta)
+
+            # upsert: новые id добавляются, существующие — обновляются (add() существующие игнорирует)
+            self.collection.upsert(
                 ids=ids,
                 embeddings=vectors,
                 documents=documents,
@@ -74,16 +120,33 @@ class ChromaVectorDB(VectorDatabase):
                 n_results=limit
             )
             
-            # Convert to standard format (file_path на верхнем уровне для удобства)
+            # Convert to standard format; не используем булевы проверки над массивами Chroma (numpy)
+            ids_raw = _to_list(results.get("ids"))
+            ids0 = ids_raw[0] if ids_raw and isinstance(ids_raw[0], (list, tuple)) else ids_raw
+            if not isinstance(ids0, (list, tuple)):
+                ids0 = [ids0] if ids0 is not None else []
+            n = len(ids0)
             similar_items = []
-            for i in range(len(results['ids'][0])):
-                meta = results['metadatas'][0][i] if results['metadatas'] else {}
+            metadatas_raw = _to_list(results.get("metadatas"))
+            docs_raw = _to_list(results.get("documents"))
+            dist_raw = _to_list(results.get("distances"))
+            meta0 = metadatas_raw[0] if metadatas_raw and isinstance(metadatas_raw[0], (list, tuple)) else metadatas_raw
+            docs0 = docs_raw[0] if docs_raw and isinstance(docs_raw[0], (list, tuple)) else docs_raw
+            dist0 = dist_raw[0] if dist_raw and isinstance(dist_raw[0], (list, tuple)) else dist_raw
+            if not isinstance(meta0, (list, tuple)):
+                meta0 = [meta0] if meta0 is not None else []
+            if not isinstance(docs0, (list, tuple)):
+                docs0 = [docs0] if docs0 is not None else []
+            if not isinstance(dist0, (list, tuple)):
+                dist0 = [dist0] if dist0 is not None else []
+            for i in range(n):
+                meta = meta0[i] if i < len(meta0) else {}
                 similar_items.append({
-                    'chunk_id': results['ids'][0][i],
-                    'content': results['documents'][0][i],
-                    'file_path': meta.get('file_path', ''),
-                    'metadata': meta,
-                    'distance': results['distances'][0][i]
+                    "chunk_id": _to_py_str(ids0[i] if i < len(ids0) else None),
+                    "content": _to_py_str(docs0[i] if i < len(docs0) else ""),
+                    "file_path": _to_py_str(meta.get("file_path", "")) if isinstance(meta, dict) else "",
+                    "metadata": meta if isinstance(meta, dict) else {},
+                    "distance": float(dist0[i]) if i < len(dist0) else 0.0,
                 })
             
             return similar_items
@@ -123,18 +186,70 @@ class ChromaVectorDB(VectorDatabase):
         
         try:
             results = self.collection.get(ids=[chunk_id])
-            if results['ids']:
-                return Embedding(
-                    vector=results['embeddings'][0],
-                    chunk_id=results['ids'][0],
-                    file_path=results['metadatas'][0].get('file_path', ''),
-                    content=results['documents'][0],
-                    metadata=results['metadatas'][0]
-                )
+            ids = _to_list(results.get("ids"))
+            if len(ids) > 0:
+                embeddings = _to_list(results.get("embeddings"))
+                vec = embeddings[0] if embeddings else None
+                if vec is not None and hasattr(vec, "tolist"):
+                    vec = vec.tolist()
+                if vec is not None:
+                    metadatas = _to_list(results.get("metadatas"))
+                    documents = _to_list(results.get("documents"))
+                    meta0 = metadatas[0] if metadatas else {}
+                    doc0 = documents[0] if documents else ""
+                    return Embedding(
+                        vector=vec,
+                        chunk_id=_to_py_str(ids[0]),
+                        file_path=_to_py_str(meta0.get("file_path", "")),
+                        content=_to_py_str(doc0),
+                        metadata=meta0,
+                    )
         except Exception as e:
             print(f"Error getting embedding from ChromaDB: {e}")
         
         return None
+
+    async def get_embeddings_by_chunk_ids(
+        self, chunk_ids: List[str]
+    ) -> Dict[str, Embedding]:
+        """Return embeddings that exist for given chunk IDs. Key = chunk_id."""
+        if not self.collection:
+            await self.initialize()
+        if not chunk_ids:
+            return {}
+        out: Dict[str, Embedding] = {}
+        batch_size = 100
+        try:
+            for start in range(0, len(chunk_ids), batch_size):
+                batch = chunk_ids[start : start + batch_size]
+                results = self.collection.get(
+                    ids=batch,
+                    include=["embeddings", "documents", "metadatas"],
+                )
+                ids = _to_list(results.get("ids"))
+                embeddings = _to_list(results.get("embeddings"))
+                documents = _to_list(results.get("documents"))
+                metadatas = _to_list(results.get("metadatas"))
+                n = len(ids)
+                if n > 0:
+                    for i in range(n):
+                        id_str = _to_py_str(ids[i] if i < len(ids) else None)
+                        meta = metadatas[i] if i < len(metadatas) else {}
+                        vec = embeddings[i] if i < len(embeddings) else None
+                        if vec is not None:
+                            if hasattr(vec, "tolist"):
+                                vec = vec.tolist()
+                            doc_i = documents[i] if i < len(documents) else ""
+                            out[id_str] = Embedding(
+                                vector=vec,
+                                chunk_id=id_str,
+                                file_path=_to_py_str(meta.get("file_path", "")),
+                                content=_to_py_str(doc_i),
+                                metadata=meta,
+                            )
+        except Exception as e:
+            print(f"Error getting embeddings by chunk IDs from ChromaDB: {e}")
+        return out
 
     async def get_embeddings_by_content_hashes(
         self, content_hashes: List[str]
@@ -144,28 +259,40 @@ class ChromaVectorDB(VectorDatabase):
             await self.initialize()
         if not content_hashes:
             return {}
+        out: Dict[str, Embedding] = {}
+        # Chroma может ограничивать размер $in; запрашиваем батчами
+        batch_size = 100
         try:
-            results = self.collection.get(
-                where={"content_hash": {"$in": content_hashes}},
-                include=["embeddings", "documents", "metadatas"],
-            )
-            out = {}
-            if results["ids"]:
-                for i, id_ in enumerate(results["ids"]):
-                    meta = results["metadatas"][i] if results["metadatas"] else {}
-                    h = meta.get("content_hash")
-                    if h and results["embeddings"]:
-                        out[h] = Embedding(
-                            vector=results["embeddings"][i],
-                            chunk_id=id_,
-                            file_path=meta.get("file_path", ""),
-                            content=results["documents"][i] if results["documents"] else "",
-                            metadata=meta,
-                        )
-            return out
+            for start in range(0, len(content_hashes), batch_size):
+                batch = content_hashes[start : start + batch_size]
+                results = self.collection.get(
+                    where={"content_hash": {"$in": batch}},
+                    include=["embeddings", "documents", "metadatas"],
+                )
+                ids = _to_list(results.get("ids"))
+                embeddings = _to_list(results.get("embeddings"))
+                documents = _to_list(results.get("documents"))
+                metadatas = _to_list(results.get("metadatas"))
+                n = len(ids)
+                if n > 0:
+                    for i in range(n):
+                        meta = metadatas[i] if i < len(metadatas) else {}
+                        h = meta.get("content_hash")
+                        h_str = _to_py_str(h) if h is not None else None
+                        vec = embeddings[i] if i < len(embeddings) else None
+                        if h_str is not None and vec is not None:
+                            if hasattr(vec, "tolist"):
+                                vec = vec.tolist()
+                            out[h_str] = Embedding(
+                                vector=vec,
+                                chunk_id=_to_py_str(ids[i] if i < len(ids) else None),
+                                file_path=_to_py_str(meta.get("file_path", "")),
+                                content=_to_py_str(documents[i] if i < len(documents) else ""),
+                                metadata=meta,
+                            )
         except Exception as e:
             print(f"Error getting embeddings by content hashes from ChromaDB: {e}")
-            return {}
+        return out
 
 
 class PineconeVectorDB(VectorDatabase):
@@ -198,21 +325,19 @@ class PineconeVectorDB(VectorDatabase):
             raise
     
     async def store_embeddings(self, embeddings: List[Embedding]) -> None:
-        """Store embeddings in Pinecone."""
+        """Store embeddings in Pinecone. upsert обновляет существующие id (в т.ч. content_hash в metadata)."""
         if not self.index:
             await self.initialize()
         
         try:
             vectors = []
             for emb in embeddings:
+                meta = {"content": emb.content, "file_path": emb.file_path, **emb.metadata}
+                _ensure_content_hash_str(meta)
                 vectors.append({
                     'id': emb.chunk_id,
                     'values': emb.vector,
-                    'metadata': {
-                        'content': emb.content,
-                        'file_path': emb.file_path,
-                        **emb.metadata
-                    }
+                    'metadata': meta,
                 })
             
             self.index.upsert(vectors=vectors)
@@ -324,21 +449,19 @@ class QdrantVectorDB(VectorDatabase):
             raise
     
     async def store_embeddings(self, embeddings: List[Embedding]) -> None:
-        """Store embeddings in Qdrant."""
+        """Store embeddings in Qdrant. upsert обновляет существующие id (в т.ч. content_hash в payload)."""
         if not self.client:
             await self.initialize()
         
         try:
             points = []
             for emb in embeddings:
+                payload = {"content": emb.content, "file_path": emb.file_path, **emb.metadata}
+                _ensure_content_hash_str(payload)
                 points.append(PointStruct(
                     id=emb.chunk_id,
                     vector=emb.vector,
-                    payload={
-                        'content': emb.content,
-                        'file_path': emb.file_path,
-                        **emb.metadata
-                    }
+                    payload=payload,
                 ))
             
             self.client.upsert(

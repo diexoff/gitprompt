@@ -85,6 +85,12 @@ class VectorDatabase(ABC):
         """Return embeddings that already exist for given content hashes. Key = content_hash."""
         pass
 
+    async def get_embeddings_by_chunk_ids(
+        self, chunk_ids: List[str]
+    ) -> Dict[str, "Embedding"]:
+        """Return embeddings that already exist for given chunk IDs. Key = chunk_id. Override in Chroma."""
+        return {}
+
 
 class EmbeddingService(ABC):
     """Abstract interface for embedding generation."""
@@ -109,8 +115,15 @@ class GitParser(ABC):
     """Abstract interface for Git repository parsing."""
     
     @abstractmethod
-    async def parse_repository(self, repo_path: str, branch: Optional[str] = None) -> List[FileChunk]:
-        """Parse repository and return file chunks."""
+    async def parse_repository(
+        self,
+        repo_path: str,
+        branch: Optional[str] = None,
+        verbose: bool = False,
+        index_working_tree: bool = False,
+    ) -> List[FileChunk]:
+        """Parse repository and return file chunks.
+        index_working_tree: if True, read from disk (working copy); else from commit (branch/HEAD)."""
         pass
     
     @abstractmethod
